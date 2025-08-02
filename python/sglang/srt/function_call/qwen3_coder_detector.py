@@ -141,14 +141,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
                             "name": function_name,
                             "arguments": {},
                         }
-                        # Send tool name with empty parameters
-                        calls.append(
-                            ToolCallItem(
-                                tool_index=self.current_tool_id,
-                                name=function_name,
-                                parameters="",
-                            )
-                        )
+                        # Don't send tool name yet, wait for complete tool call
                         # Remove the processed function declaration
                         self._buf = self._buf[function_match.end() :]
                         continue
@@ -173,18 +166,22 @@ class Qwen3CoderDetector(BaseFormatDetector):
                 if self.tool_call_end_token in self._buf:
                     end_pos = self._buf.find(self.tool_call_end_token)
 
-                    # Add closing brace to complete the JSON object
+                    # Complete the tool call and emit final result
                     current_streamed = self.streamed_args_for_tool[self.current_tool_id]
                     if current_streamed and not current_streamed.endswith("}"):
+                        current_streamed += "}"
+                        self.streamed_args_for_tool[self.current_tool_id] = (
+                            current_streamed
+                        )
+
+                    # Emit the final complete tool call
+                    if self._current_function_name and current_streamed:
                         calls.append(
                             ToolCallItem(
                                 tool_index=self.current_tool_id,
-                                name=None,
-                                parameters="}",
+                                name=self._current_function_name,
+                                parameters=current_streamed,
                             )
-                        )
-                        self.streamed_args_for_tool[self.current_tool_id] = (
-                            current_streamed + "}"
                         )
 
                     # Complete the tool call
@@ -252,14 +249,6 @@ class Qwen3CoderDetector(BaseFormatDetector):
             else:
                 # Additional parameter - add to existing JSON
                 json_fragment = f', "{param_name}": {json.dumps(param_value_parsed, ensure_ascii=False)}'
-
-            calls.append(
-                ToolCallItem(
-                    tool_index=self.current_tool_id,
-                    name=None,
-                    parameters=json_fragment,
-                )
-            )
 
             # Update the streamed arguments
             self.streamed_args_for_tool[self.current_tool_id] += json_fragment
