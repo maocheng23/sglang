@@ -499,7 +499,7 @@ def select_top_k_tokens(
         topk_index = topk_index.reshape(-1, topk**2)
         input_ids = torch.gather(topk_index, index=topk_cs_index, dim=1).flatten()
 
-        if hidden_states.shape[0] > 0:
+        if hidden_states is not None and hidden_states.shape[0] > 0:
             selected_input_index = topk_cs_index.flatten() // topk + torch.arange(
                 0, hidden_states.shape[0], step=topk, device=topk_index.device
             ).repeat_interleave(topk)

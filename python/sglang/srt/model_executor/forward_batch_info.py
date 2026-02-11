@@ -923,13 +923,15 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
                 logits_output.next_token_logits = logits_output.next_token_logits[
                     :num_tokens
                 ]
-                logits_output.hidden_states = logits_output.hidden_states[:num_tokens]
+                if logits_output.hidden_states is not None:
+                    logits_output.hidden_states = logits_output.hidden_states[:num_tokens]
             elif self.forward_mode.is_target_verify():  # verify
                 num_tokens = bs * self.spec_info.draft_token_num
                 logits_output.next_token_logits = logits_output.next_token_logits[
                     :num_tokens
                 ]
-                logits_output.hidden_states = logits_output.hidden_states[:num_tokens]
+                if logits_output.hidden_states is not None:
+                    logits_output.hidden_states = logits_output.hidden_states[:num_tokens]
             elif self.forward_mode.is_draft_extend():  # draft extend
                 self.spec_info.accept_length = self.spec_info.accept_length[:bs]
                 logits_output.next_token_logits = logits_output.next_token_logits[:bs]
@@ -940,7 +942,8 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
                 logits_output.hidden_states = logits_output.hidden_states[:bs]
             elif self.forward_mode.is_extend() or self.forward_mode.is_idle():
                 logits_output.next_token_logits = logits_output.next_token_logits[:bs]
-                logits_output.hidden_states = logits_output.hidden_states[:bs]
+                if logits_output.hidden_states is not None:
+                    logits_output.hidden_states = logits_output.hidden_states[:bs]
 
             if hasattr(self, "hidden_states_backup"):
                 self.spec_info.hidden_states = self.hidden_states_backup

@@ -2760,6 +2760,12 @@ def fast_topk(values, topk, dim):
         return torch.topk(values, topk, dim=dim)
 
 
+def fast_sample(probs: torch.Tensor, num_samples: int = 1):
+    sample_index = torch.multinomial(probs, num_samples=num_samples)
+    sample_p = probs.gather(1, sample_index)
+    return sample_p, sample_index
+
+
 def bind_or_assign(target, source):
     if target is not None:
         target.copy_(source)

@@ -605,6 +605,7 @@ class ServerArgs:
     scheduler_recv_interval: int = 1
     numa_node: Optional[List[int]] = None
     enable_deterministic_inference: bool = False
+    enable_prefill_only_deterministic_inference: bool = False
     rl_on_policy_target: Optional[str] = None
     enable_attn_tp_input_scattered: bool = False
     # Context parallelism used in the long sequence prefill phase of DeepSeek v3.2
@@ -2450,6 +2451,9 @@ class ServerArgs:
             raise ValueError("--swa-full-tokens-ratio should be in range (0, 1.0].")
 
     def _handle_deterministic_inference(self):
+        if self.enable_prefill_only_deterministic_inference:
+            self.enable_deterministic_inference = True
+
         if self.rl_on_policy_target is not None:
             logger.warning(
                 "Enable deterministic inference because of rl_on_policy_target."
@@ -2464,6 +2468,7 @@ class ServerArgs:
         if self.enable_deterministic_inference:
             # Check sampling backend
             self.sampling_backend = "pytorch"
+            self.enable_flashinfer_allreduce_fusion = False
             logger.warning(
                 "Sampling backend is set to pytorch for deterministic inference."
             )
@@ -3632,7 +3637,14 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-algorithm",
             type=str,
-            choices=["EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "NGRAM"],
+            choices=[
+                "EAGLE",
+                "EAGLE3",
+                "NEXTN",
+                "STANDALONE",
+                "NGRAM",
+                "DECODE_VERIFY_ROLLBACK",
+            ],
             help="Speculative algorithm.",
         )
         parser.add_argument(
@@ -4454,6 +4466,11 @@ class ServerArgs:
             "--enable-deterministic-inference",
             action="store_true",
             help="Enable deterministic inference mode with batch invariant ops.",
+        )
+        parser.add_argument(
+            "--enable-prefill-only-deterministic-inference",
+            action="store_true",
+            help="Enable prefill-only deterministic inference mode with batch invariant ops.",
         )
         parser.add_argument(
             "--rl-on-policy-target",

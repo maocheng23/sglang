@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import bisect
+import contextlib
 import gc
 import inspect
 import logging
@@ -28,6 +29,10 @@ import torch
 import tqdm
 from torch.profiler import ProfilerActivity, profile
 
+from sglang.srt.batch_invariant_ops.batch_invariant_ops import (
+    disable_batch_invariant_mode,
+    enable_batch_invariant_mode,
+)
 from sglang.srt.batch_overlap.two_batch_overlap import TboCudaGraphRunnerPlugin
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH
 from sglang.srt.distributed import get_tensor_model_parallel_rank
@@ -61,6 +66,7 @@ from sglang.srt.model_executor.forward_batch_info import (
 )
 from sglang.srt.model_executor.input_buffers import GraphInputBuffers
 from sglang.srt.multiplex.pdmux_context import get_current_stream_idx, get_stream_groups
+from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils import (
     empty_context,
     get_available_gpu_memory,
@@ -276,6 +282,7 @@ class CudaGraphRunner:
             model_runner.spec_algorithm.is_eagle()
             or model_runner.spec_algorithm.is_standalone()
             or model_runner.spec_algorithm.is_ngram()
+            or getattr(model_runner, "enable_dvr_target_verify_cuda_graph", None)
         ):
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
@@ -469,6 +476,36 @@ class CudaGraphRunner:
         )
         logger.info(log_message)
 
+    @contextlib.contextmanager
+    def _patch_prefill_only_deterministic_inference(self):
+        try:
+            if (
+                self.model_runner.server_args.enable_prefill_only_deterministic_inference
+            ):
+                self.model_runner.server_args.enable_deterministic_inference = False
+                self.model_runner.server_args.enable_flashinfer_allreduce_fusion = True
+                os.environ["SGLANG_ENABLE_DETERMINISTIC_INFERENCE"] = "0"
+                os.environ.pop("NCCL_ALGO", None)
+                self.model_runner.attn_backend.num_splits = 0
+                self.model_runner.server_args.disable_custom_all_reduce = False
+                disable_batch_invariant_mode()
+                get_global_server_args().enable_deterministic_inference = False
+                get_global_server_args().enable_flashinfer_allreduce_fusion = True
+            yield
+        finally:
+            if (
+                self.model_runner.server_args.enable_prefill_only_deterministic_inference
+            ):
+                self.model_runner.server_args.enable_deterministic_inference = True
+                self.model_runner.server_args.enable_flashinfer_allreduce_fusion = False
+                os.environ["SGLANG_ENABLE_DETERMINISTIC_INFERENCE"] = "1"
+                os.environ["NCCL_ALGO"] = "allreduce:tree"
+                self.model_runner.attn_backend.num_splits = 1
+                self.model_runner.server_args.disable_custom_all_reduce = True
+                enable_batch_invariant_mode()
+                get_global_server_args().enable_deterministic_inference = True
+                get_global_server_args().enable_flashinfer_allreduce_fusion = False
+
     def capture(self) -> None:
         profile_context = empty_context()
         if self.enable_profile_cuda_graph:
@@ -517,7 +554,7 @@ class CudaGraphRunner:
         # can reuse the memory pool allocated for the large shapes.
         with freeze_gc(self.model_runner.server_args.enable_cudagraph_gc):
             if not self.enable_pdmux:
-                with graph_capture() as graph_capture_context, profile_context as prof:
+                with graph_capture() as graph_capture_context, profile_context as prof, self._patch_prefill_only_deterministic_inference():
                     self.stream = graph_capture_context.stream
                     _capture_one_stream()
             else:

@@ -40,6 +40,7 @@ from sglang.srt.speculative.spec_utils import (
     get_target_cache_loc,
 )
 from sglang.srt.utils import is_cuda, next_power_of_2
+from sglang.srt.utils.common import get_bool_env_var
 
 if is_cuda():
     from sgl_kernel import (
@@ -49,6 +50,16 @@ if is_cuda():
     )
 
 logger = logging.getLogger(__name__)
+
+
+USE_CHAIN_SPECULATIVE_SAMPLING = get_bool_env_var("USE_CHAIN_SPECULATIVE_SAMPLING")
+speculative_sampling_fn = None
+if USE_CHAIN_SPECULATIVE_SAMPLING:
+    from sglang.srt.speculative.reject_sampling import chain_speculative_sampling_triton
+
+    speculative_sampling_fn = chain_speculative_sampling_triton
+else:
+    speculative_sampling_fn = tree_speculative_sampling_target_only
 
 
 @dataclass
@@ -67,6 +78,7 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
     seq_lens_sum: int
     seq_lens_cpu: torch.Tensor
     grammar: BaseGrammarObject = None
+    draft_probs: torch.Tensor = None
 
     # Shape info for padding
     num_tokens_per_batch: int = -1
@@ -231,6 +243,7 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
         tokens. I.e., logits_output.next_token_logits only contains
         accepted token logits.
         """
+        has_hidden_stats = getattr(batch.spec_info, "hidden_states", None) is not None
         if batch.forward_mode.is_idle():
             return EagleVerifyOutput(
                 draft_input=EagleDraftInput.create_idle_input(
@@ -331,6 +344,17 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
             target_probs = F.softmax(
                 logits_output.next_token_logits / expanded_temperature, dim=-1
             )  # (bs * draft_token_num, vocab_size)
+            # logits_reshape = logits_output.next_token_logits.reshape(bs, self.draft_token_num, -1)
+            # logits_reshape = torch.gather(logits_reshape[:,:target_probs.shape[1]], dim=2, index=candidates[:,1:].unsqueeze(-1)).squeeze(-1)
+            # log_info_on_rank0(logger, f"{logits_reshape=}")
+            # logits_reshape = torch.sort(logits_reshape, descending=True, dim=-1).values
+            # logits_reshape = torch.gather(logits_reshape[:,:target_probs.shape[1]], dim=2, index=candidates[:,1:].unsqueeze(-1)).squeeze(-1)
+            # print(f"{logits_reshape=}")
+            # target_probs_reshape = target_probs.reshape(bs, self.draft_token_num, -1)
+            # target_probs_raw_before_renorm = torch.gather(target_probs_reshape[:,:target_probs_reshape.shape[1]], dim=2, index=candidates[:,1:].unsqueeze(-1)).squeeze(-1)
+            # target_probs_max_before_renorm = target_probs_reshape.max(dim=-1).values
+            # log_info_on_rank0(logger, f"{target_probs_raw_before_renorm=}")
+            # print(f"{target_probs_max_before_renorm=}")
             target_probs = top_k_renorm_prob(
                 target_probs,
                 torch.repeat_interleave(
@@ -346,8 +370,12 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
                 )
             target_probs = target_probs.reshape(bs, self.draft_token_num, -1)
 
-            draft_probs = torch.zeros(
-                target_probs.shape, dtype=torch.float32, device=batch.device
+            draft_probs = (
+                torch.zeros(
+                    target_probs.shape, dtype=torch.float32, device=batch.device
+                )
+                if not USE_CHAIN_SPECULATIVE_SAMPLING
+                else self.draft_probs
             )
 
             # coins for rejection sampling
@@ -358,7 +386,13 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
             coins_for_final_sampling = torch.rand(
                 (bs,), dtype=torch.float32, device=batch.device
             )
-            tree_speculative_sampling_target_only(
+            # prob_diff = (target_probs[:,:draft_probs.shape[1]] / draft_probs)
+            # # target_probs_raw = torch.gather(target_probs[:,:draft_probs.shape[1]], dim=2, index=candidates[:,1:].unsqueeze(-1)).squeeze(-1)
+            # # draft_probs_raw = torch.gather(draft_probs, dim=2, index=candidates[:,1:].unsqueeze(-1)).squeeze(-1)
+            # prob_diff = torch.gather(prob_diff, dim=2, index=candidates[:,1:].unsqueeze(-1)).squeeze(-1)
+            # log_info_on_rank0(logger, f"{prob_diff=} {prob_diff.abs().min()=}")
+            # log_info_on_rank0(logger, f"{target_probs_raw=} {draft_probs_raw=}")
+            speculative_sampling_fn(
                 predicts=predict,  # mutable
                 accept_index=accept_index,  # mutable
                 accept_token_num=accept_length,  # mutable
@@ -521,7 +555,11 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
             batch.seq_lens_cpu.add_(accept_length_cpu + 1)
 
             draft_input = EagleDraftInput(
-                hidden_states=batch.spec_info.hidden_states[accept_index],
+                hidden_states=(
+                    batch.spec_info.hidden_states[accept_index]
+                    if has_hidden_stats
+                    else None
+                ),
                 verified_id=verified_id,
                 accept_length=accept_length,
                 accept_length_cpu=accept_length_list,
@@ -582,9 +620,11 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
                     )
 
                 draft_input = EagleDraftInput(
-                    hidden_states=batch.spec_info.hidden_states[
-                        unfinished_accept_index
-                    ],
+                    hidden_states=(
+                        batch.spec_info.hidden_states[unfinished_accept_index]
+                        if has_hidden_stats
+                        else None
+                    ),
                     verified_id=predict[unfinished_accept_index],
                     accept_length_cpu=draft_input_accept_length_cpu,
                     accept_length=accept_length[unfinished_index_device],
@@ -775,13 +815,15 @@ class EagleDraftInput(SpecInput, EagleDraftInputV2Mixin):
 
             self.topk_p = self.topk_p[: len(new_indices)]
             self.topk_index = self.topk_index[: len(new_indices)]
-            self.hidden_states = self.hidden_states[: len(new_indices)]
+            if self.hidden_states is not None:
+                self.hidden_states = self.hidden_states[: len(new_indices)]
             self.verified_id = self.verified_id[: len(new_indices)]
         else:
             # in some cases(e.g draft_extend), we have not filtered the batch by `unfinished_index`
             self.topk_p = self.topk_p[new_indices]
             self.topk_index = self.topk_index[new_indices]
-            self.hidden_states = self.hidden_states[new_indices]
+            if self.hidden_states is not None:
+                self.hidden_states = self.hidden_states[new_indices]
             self.verified_id = self.verified_id[new_indices]
 
     def merge_batch(self, spec_info: "EagleDraftInput"):
@@ -794,17 +836,17 @@ class EagleDraftInput(SpecInput, EagleDraftInputV2Mixin):
             )
             return
 
-        if self.hidden_states is None:
-            self.hidden_states = spec_info.hidden_states
-            self.verified_id = spec_info.verified_id
-            self.topk_p = spec_info.topk_p
-            self.topk_index = spec_info.topk_index
-            return
-        if spec_info.hidden_states is None:
-            return
-        self.hidden_states = torch.cat(
-            [self.hidden_states, spec_info.hidden_states], axis=0
-        )
+        # if self.hidden_states is None:
+        #     self.hidden_states = spec_info.hidden_states
+        #     self.verified_id = spec_info.verified_id
+        #     self.topk_p = spec_info.topk_p
+        #     self.topk_index = spec_info.topk_index
+        #     return
+        # if spec_info.hidden_states is None:
+        #     return
+        # self.hidden_states = torch.cat(
+        #     [self.hidden_states, spec_info.hidden_states], axis=0
+        # )
         self.verified_id = torch.cat([self.verified_id, spec_info.verified_id], axis=0)
         self.topk_p = torch.cat([self.topk_p, spec_info.topk_p])
         self.topk_index = torch.cat([self.topk_index, spec_info.topk_index])
