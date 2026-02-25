@@ -479,12 +479,14 @@ class Qwen3MoeAttention(nn.Module):
             rope_scaling=rope_scaling,
             dual_chunk_attention_config=dual_chunk_attention_config,
         )
-        self.compatible_with_fused_kv_buffer = (
-            False if isinstance(self.rotary_emb, MRotaryEmbedding) else True
-        )
-        self.compatible_with_fused_qk_norm_rope = (
-            not isinstance(self.rotary_emb, MRotaryEmbedding)
-        ) and self.head_dim in (64, 128, 256)
+        self.compatible_with_fused_kv_buffer = False
+        self.compatible_with_fused_qk_norm_rope = False
+        # self.compatible_with_fused_kv_buffer = (
+        #     False if isinstance(self.rotary_emb, MRotaryEmbedding) else True
+        # )
+        # self.compatible_with_fused_qk_norm_rope = (
+        #     not isinstance(self.rotary_emb, MRotaryEmbedding)
+        # ) and self.head_dim in (64, 128, 256)
         self.use_fused_qk_norm_rope = (
             get_global_server_args().enable_fused_qk_norm_rope
             and self.compatible_with_fused_qk_norm_rope

@@ -519,3 +519,6 @@ class DecodeVerifyRollbackWorker:
             device=batch.spec_info.verified_id.device,
             dtype=torch.float32,
         )
+
+    def clear_cache_pool(self):
+        pass
