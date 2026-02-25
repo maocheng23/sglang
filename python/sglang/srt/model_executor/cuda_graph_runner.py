@@ -480,7 +480,8 @@ class CudaGraphRunner:
     def _patch_prefill_only_deterministic_inference(self):
         try:
             if (
-                self.model_runner.server_args.enable_prefill_only_deterministic_inference
+                self.model_runner.server_args.enable_prefill_only_deterministic_inference and 
+                not getattr(self.model_runner, "enable_dvr_target_verify_cuda_graph", False)
             ):
                 self.model_runner.server_args.enable_deterministic_inference = False
                 self.model_runner.server_args.enable_flashinfer_allreduce_fusion = True
