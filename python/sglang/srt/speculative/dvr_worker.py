@@ -177,6 +177,7 @@ class DecodeVerifyRollbackWorker:
             batch_result.logits_output,
             batch_result.next_token_ids,
         )
+        logits_output.next_token_logits = logits_output.next_token_logits.to(torch.float32)
 
         batch.spec_info = EagleDraftInput(
             verified_id=next_token_ids,
@@ -415,7 +416,7 @@ class DecodeVerifyRollbackWorker:
             logits_output = self.model_runner.forward(
                 forward_batch, skip_attn_backend_init=forward_batch.forward_mode.is_idle()
             ).logits_output
-            logits_output.next_token_logits = logits_output.next_token_logits[:forward_batch.batch_size]
+            logits_output.next_token_logits = logits_output.next_token_logits.to(torch.float32)
             if self.server_args.enable_nan_detection:
                 detect_nan(logits_output)
             probs = self.get_renorm_probs(
@@ -471,6 +472,7 @@ class DecodeVerifyRollbackWorker:
             batch_result.logits_output,
             batch_result.can_run_cuda_graph,
         )
+        logits_output.next_token_logits = logits_output.next_token_logits.to(torch.float32)
         if self.server_args.enable_nan_detection:
             detect_nan(logits_output)
 
