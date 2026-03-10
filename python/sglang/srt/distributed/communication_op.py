@@ -33,3 +33,10 @@ def broadcast_tensor_dict(
     if not torch.distributed.is_initialized():
         return tensor_dict
     return get_tp_group().broadcast_tensor_dict(tensor_dict, src)
+
+
+def tensor_model_parallel_tree_all_reduce(input_: torch.Tensor) -> torch.Tensor:
+    """Tree all-reduce the input tensor across model parallel group."""
+    from sglang.srt.tp_invariant_ops import tree_all_reduce_sum
+
+    return tree_all_reduce_sum(input_, device_group=get_tp_group().device_group)

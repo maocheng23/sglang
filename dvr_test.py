@@ -213,13 +213,13 @@ def test_input_output_logprobs_match_helper(
     )
 
 ACC_THRESHOLDS = {
-    "Qwen/Qwen3-30B-A3B": {"kl_div": 1e-9},
+    "/cpfs01/user/yuche.lz/models/qwen3_5_moe_swe": {"kl_div": 1e-9},
 }
 
 test_input_output_logprobs_match_helper(
     base_url="http://127.0.0.1:30000", 
     ACC_THRESHOLDS=ACC_THRESHOLDS, 
-    model_name="Qwen/Qwen3-30B-A3B",
+    model_name="/cpfs01/user/yuche.lz/models/qwen3_5_moe_swe",
     max_samples=128,
     max_new_tokens=1024,
 )

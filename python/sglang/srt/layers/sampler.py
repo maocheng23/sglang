@@ -108,16 +108,11 @@ class Sampler(nn.Module):
             if return_logprob and SGLANG_RETURN_ORIGINAL_LOGPROB:
                 probs_without_temp_scaling = torch.softmax(logits, dim=-1)
 
-            if get_global_server_args().rl_on_policy_target is not None:
-                logits_div_temperature = (
-                    logits.bfloat16().div(sampling_info.temperatures).bfloat16()
-                )
-                logprobs_via_logsoftmax_kernel = torch.log_softmax(
-                    logits_div_temperature, dim=-1
-                )
 
             # Post process logits
             logits.div_(sampling_info.temperatures)
+            if get_global_server_args().rl_on_policy_target is not None:
+                logprobs_via_logsoftmax_kernel = torch.log_softmax(logits, dim=-1)
             # For ascend backend, softmax is not needed before sampling
             if not get_global_server_args().sampling_backend == "ascend" or (
                 return_logprob and not SGLANG_RETURN_ORIGINAL_LOGPROB
@@ -332,10 +327,10 @@ def top_k_top_p_min_p_sampling_from_probs_torch(
     if need_min_p_sampling:
         min_p_thresholds = probs_sort[:, 0] * min_ps
         probs_sort[probs_sort < min_p_thresholds.view(-1, 1)] = 0.0
-    if sampling_seed is not None:
-        sampled_index = multinomial_with_seed(probs_sort, sampling_seed, positions)
-    else:
-        sampled_index = torch.multinomial(probs_sort, num_samples=1)
+    # if sampling_seed is not None:
+    #     sampled_index = multinomial_with_seed(probs_sort, sampling_seed, positions)
+    # else:
+    sampled_index = torch.multinomial(probs_sort, num_samples=1)
     # int32 range is enough to represent the token ids
     probs_idx = probs_idx.to(torch.int32)
     batch_next_token_ids = torch.gather(probs_idx, dim=1, index=sampled_index).view(-1)
@@ -433,10 +428,10 @@ def sampling_from_probs_torch(
 ):
     """A sampling implementation with native pytorch operations, without
     top-k, top-p, or min-p filtering."""
-    if sampling_seed is not None:
-        sampled_index = multinomial_with_seed(probs, sampling_seed, positions)
-    else:
-        sampled_index = torch.multinomial(probs, num_samples=1)
+    # if sampling_seed is not None:
+    #     sampled_index = multinomial_with_seed(probs, sampling_seed, positions)
+    # else:
+    sampled_index = torch.multinomial(probs, num_samples=1)
     batch_next_token_ids = sampled_index.view(-1).to(torch.int32)
     return batch_next_token_ids
 

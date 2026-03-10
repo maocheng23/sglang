@@ -114,6 +114,7 @@ class RMSNorm(MultiPlatformOp):
             if (
                 residual is not None
                 or get_global_server_args().rl_on_policy_target == "fsdp"
+                or get_global_server_args().rl_on_policy_target == "fsdp_tp"
             ):
                 return self.forward_native(x, residual, post_residual_addition)
             return rms_norm_batch_invariant(
@@ -195,14 +196,14 @@ class RMSNorm(MultiPlatformOp):
         if not x.is_contiguous():
             x = x.contiguous()
         orig_dtype = self.override_orig_dtype or x.dtype
+        if residual is not None and not self.fp32_residual:
+            x = x + residual
+            residual = x.clone()
         x = x.to(torch.float32)
-        if residual is not None:
+        if residual is not None and self.fp32_residual:
             x = x + residual.to(torch.float32)
             if post_residual_addition is not None:
                 x = x + post_residual_addition.to(torch.float32)
-            if self.fp32_residual:
-                residual = x.clone()
-            else:
                 residual = x.to(orig_dtype)
 
         hidden_size = x.shape[-1]

@@ -14,6 +14,8 @@ import torch.nn.functional as F
 import triton.language as tl
 
 from sglang.srt.layers.moe.moe_runner import MoeRunnerConfig
+from sglang.srt.server_args import get_global_server_args
+from sglang.srt.tp_invariant_ops.tp_invariant_ops import moe_sum_tree_reduce
 from sglang.srt.utils import (
     cpu_has_amx_support,
     get_bool_env_var,
@@ -319,6 +321,7 @@ def fused_experts_impl(
     gemm1_alpha: Optional[float] = None,
     gemm1_limit: Optional[float] = None,
     filter_expert: bool = True,
+    layer_id: Optional[int] = None,  # Optional layer_id for debugging
 ):
     padded_size = padding_size
     if not (use_fp8_w8a8 or use_int8_w8a8) or block_shape is not None or _use_aiter:
@@ -571,6 +574,14 @@ def fused_experts_impl(
                     intermediate_cache3[:, 1],
                     out=out_hidden_states[begin_chunk_idx:end_chunk_idx],
                 ).squeeze(dim=1)
+            elif get_global_server_args().rl_on_policy_target == "fsdp_tp":
+                moe_sum_tree_reduce(
+                    intermediate_cache3.view(*intermediate_cache3.shape),
+                    out_hidden_states[begin_chunk_idx:end_chunk_idx],
+                    curr_topk_ids,
+                    routed_scaling_factor,
+                    E,
+                )
             else:
                 # According to micro benchmark results, torch.compile can get better performance for small token.
                 if False:

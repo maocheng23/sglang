@@ -33,6 +33,10 @@ from sglang.srt.batch_invariant_ops.batch_invariant_ops import (
     disable_batch_invariant_mode,
     enable_batch_invariant_mode,
 )
+from sglang.srt.tp_invariant_ops.tp_invariant_ops import (
+    disable_tp_invariant_mode,
+    enable_tp_invariant_mode,
+)
 from sglang.srt.batch_overlap.two_batch_overlap import TboCudaGraphRunnerPlugin
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH
 from sglang.srt.distributed import get_tensor_model_parallel_rank
@@ -478,6 +482,7 @@ class CudaGraphRunner:
 
     @contextlib.contextmanager
     def _patch_prefill_only_deterministic_inference(self):
+        use_accl = os.getenv("ACCL_BINARY_TREE_ENABLE") == "1"
         try:
             if (
                 self.model_runner.server_args.enable_prefill_only_deterministic_inference and 
@@ -485,13 +490,19 @@ class CudaGraphRunner:
             ):
                 self.model_runner.server_args.enable_deterministic_inference = False
                 self.model_runner.server_args.enable_flashinfer_allreduce_fusion = True
+                self.model_runner.server_args.rl_on_policy_target = None
                 os.environ["SGLANG_ENABLE_DETERMINISTIC_INFERENCE"] = "0"
-                os.environ.pop("NCCL_ALGO", None)
+                if use_accl:
+                    os.environ["ACCL_BINARY_TREE_ENABLE"] = "0"
+                else:
+                    os.environ.pop("NCCL_ALGO", None)
                 self.model_runner.attn_backend.num_splits = 0
                 self.model_runner.server_args.disable_custom_all_reduce = False
                 disable_batch_invariant_mode()
+                disable_tp_invariant_mode()
                 get_global_server_args().enable_deterministic_inference = False
                 get_global_server_args().enable_flashinfer_allreduce_fusion = True
+                get_global_server_args().rl_on_policy_target = None
             yield
         finally:
             if (
@@ -499,13 +510,19 @@ class CudaGraphRunner:
             ):
                 self.model_runner.server_args.enable_deterministic_inference = True
                 self.model_runner.server_args.enable_flashinfer_allreduce_fusion = False
+                self.model_runner.server_args.rl_on_policy_target = "fsdp_tp"
                 os.environ["SGLANG_ENABLE_DETERMINISTIC_INFERENCE"] = "1"
-                os.environ["NCCL_ALGO"] = "allreduce:tree"
+                if use_accl:
+                    os.environ["ACCL_BINARY_TREE_ENABLE"] = "1"
+                else:
+                    os.environ["NCCL_ALGO"] = "allreduce:tree"
                 self.model_runner.attn_backend.num_splits = 1
                 self.model_runner.server_args.disable_custom_all_reduce = True
                 enable_batch_invariant_mode()
+                enable_tp_invariant_mode()
                 get_global_server_args().enable_deterministic_inference = True
                 get_global_server_args().enable_flashinfer_allreduce_fusion = False
+                get_global_server_args().rl_on_policy_target = "fsdp_tp"
 
     def capture(self) -> None:
         profile_context = empty_context()

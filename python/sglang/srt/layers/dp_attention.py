@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 from contextlib import contextmanager
 from enum import IntEnum, auto
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -17,9 +18,11 @@ from sglang.srt.distributed import (
     get_tp_group,
     tensor_model_parallel_all_reduce,
 )
+from sglang.srt.distributed.communication_op import tensor_model_parallel_tree_all_reduce
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
 )
+from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils import get_bool_env_var, is_hip
 
 if TYPE_CHECKING:
@@ -472,7 +475,14 @@ def _dp_gather_via_all_reduce(
         inplace_all_reduce(global_tokens, group_name=get_tp_group().unique_name)
 
     else:
-        global_tokens[:] = tensor_model_parallel_all_reduce(global_tokens)
+        if get_global_server_args().rl_on_policy_target == "fsdp_tp":
+            use_accl = os.getenv("ACCL_BINARY_TREE_ENABLE") == "1"
+            if not use_accl:
+                global_tokens[:] = tensor_model_parallel_tree_all_reduce(global_tokens)
+            else:
+                global_tokens[:] = tensor_model_parallel_all_reduce(global_tokens)
+        else:
+            global_tokens[:] = tensor_model_parallel_all_reduce(global_tokens)
 
 
 def _dp_gather_via_all_gather(

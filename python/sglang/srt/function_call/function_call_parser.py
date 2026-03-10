@@ -13,23 +13,20 @@ from sglang.srt.function_call.base_format_detector import BaseFormatDetector
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.deepseekv3_detector import DeepSeekV3Detector
 from sglang.srt.function_call.deepseekv31_detector import DeepSeekV31Detector
-from sglang.srt.function_call.deepseekv32_detector import DeepSeekV32Detector
 from sglang.srt.function_call.glm4_moe_detector import Glm4MoeDetector
-from sglang.srt.function_call.glm47_moe_detector import Glm47MoeDetector
 from sglang.srt.function_call.gpt_oss_detector import GptOssDetector
-from sglang.srt.function_call.hermes_detector import HermesDetector
-from sglang.srt.function_call.internlm_detector import InternlmDetector
 from sglang.srt.function_call.kimik2_detector import KimiK2Detector
-from sglang.srt.function_call.lfm2_detector import Lfm2Detector
 from sglang.srt.function_call.llama32_detector import Llama32Detector
-from sglang.srt.function_call.mimo_detector import MiMoDetector
 from sglang.srt.function_call.minimax_m2 import MinimaxM2Detector
 from sglang.srt.function_call.mistral_detector import MistralDetector
 from sglang.srt.function_call.pythonic_detector import PythonicDetector
 from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
 from sglang.srt.function_call.qwen25_detector import Qwen25Detector
+try:
+    from sglang.srt.function_call.qwen3xml_detector import Qwen3XMLDetector
+except ImportError:
+    Qwen3XMLDetector = None
 from sglang.srt.function_call.step3_detector import Step3Detector
-from sglang.srt.function_call.trinity_detector import TrinityDetector
 from sglang.srt.function_call.utils import get_json_schema_constraint
 
 logger = logging.getLogger(__name__)
@@ -47,25 +44,19 @@ class FunctionCallParser:
     ToolCallParserEnum: Dict[str, Type[BaseFormatDetector]] = {
         "deepseekv3": DeepSeekV3Detector,
         "deepseekv31": DeepSeekV31Detector,
-        "deepseekv32": DeepSeekV32Detector,
         "glm": Glm4MoeDetector,
         "glm45": Glm4MoeDetector,
-        "glm47": Glm47MoeDetector,
         "gpt-oss": GptOssDetector,
         "kimi_k2": KimiK2Detector,
-        "lfm2": Lfm2Detector,
         "llama3": Llama32Detector,
-        "mimo": MiMoDetector,
         "mistral": MistralDetector,
         "pythonic": PythonicDetector,
         "qwen": Qwen25Detector,
         "qwen25": Qwen25Detector,
+        "qwen3xml": Qwen3XMLDetector,
         "qwen3_coder": Qwen3CoderDetector,
         "step3": Step3Detector,
         "minimax-m2": MinimaxM2Detector,
-        "trinity": TrinityDetector,
-        "interns1": InternlmDetector,
-        "hermes": HermesDetector,
     }
 
     def __init__(self, tools: List[Tool], tool_call_parser: str):
@@ -158,10 +149,7 @@ class FunctionCallParser:
             info = get_structure_info(name)
 
             # accept all if not strict, otherwise only accept the schema
-            is_strict = (
-                function.strict or self.tool_strict_level >= ToolStrictLevel.PARAMETER
-            )
-            schema = function.parameters if is_strict else {}
+            schema = {}
 
             tool_structures.append(
                 StructuresResponseFormat(
@@ -199,10 +187,7 @@ class FunctionCallParser:
         if (
             self.detector.supports_structural_tag()
             and tool_choice == "auto"
-            and (
-                any(tool.function.strict for tool in self.tools)
-                or self.tool_strict_level >= ToolStrictLevel.FUNCTION
-            )
+            and False
         ):
             tag = self.get_structure_tag()
             return ("structural_tag", tag)

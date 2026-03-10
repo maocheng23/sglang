@@ -12,6 +12,7 @@
 # limitations under the License.
 # ==============================================================================
 import logging
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -25,6 +26,7 @@ from sglang.srt.distributed import (
     get_tensor_model_parallel_world_size,
     get_tp_group,
     tensor_model_parallel_all_reduce,
+    tensor_model_parallel_tree_all_reduce,
 )
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
@@ -564,6 +566,11 @@ class LayerCommunicator:
         )
 
     def should_use_reduce_scatter(self, forward_batch: ForwardBatch):
+        # RL on-policy requires deterministic tree_all_reduce, disable reduce scatter
+        rl_target = get_global_server_args().rl_on_policy_target
+        if rl_target in ("fsdp_tp", "fsdp"):
+            return False
+        
         if not self.allow_reduce_scatter:
             return False
         if (
@@ -582,6 +589,11 @@ class LayerCommunicator:
     def should_fuse_mlp_allreduce_with_next_layer(
         self, forward_batch: ForwardBatch
     ) -> bool:
+         # RL on-policy requires deterministic tree_all_reduce, disable fusion
+        rl_target = get_global_server_args().rl_on_policy_target
+        if rl_target in ("fsdp_tp", "fsdp"):
+            return False
+
         if (
             is_dp_attention_enabled()
             and self._speculative_algo is not None
@@ -806,7 +818,16 @@ class CommunicateWithAllReduceAndLayerNormFn:
                     hidden_states, residual
                 )
             else:
-                hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+                if get_global_server_args().rl_on_policy_target == "fsdp_tp":
+                    use_accl = os.getenv("ACCL_BINARY_TREE_ENABLE") == "1"
+                    if not use_accl:
+                        hidden_states = tensor_model_parallel_tree_all_reduce(
+                            hidden_states
+                        )
+                    else:
+                        hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+                else:
+                    hidden_states = tensor_model_parallel_all_reduce(hidden_states)
                 if _is_npu and context.cache is not None:
                     _ = prepare_weight_cache(hidden_states, context.cache)
                 hidden_states, residual = layernorm(hidden_states, residual)
