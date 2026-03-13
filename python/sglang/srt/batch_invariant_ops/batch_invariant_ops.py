@@ -277,6 +277,7 @@ def matmul_persistent(
         and (b.dtype == torch.bfloat16)
         and a.is_contiguous()
         and b.transpose(0, 1).is_contiguous()
+        and K >= MIN_DEEPGEMM_DIM
         and N >= MIN_DEEPGEMM_DIM
     ):
         if _ENABLE_MM_COMPARISON_TEST:

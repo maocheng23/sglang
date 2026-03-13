@@ -65,7 +65,26 @@ def _transform_json(dir_input, dir_output, filename, fn):
 
 
 def _transform_config(args, config_json):
+    original_layers = config_json.get("num_hidden_layers", "unknown")
     config_json["num_hidden_layers"] = args.keep_num_layers
+
+    if "layer_types" in config_json:
+        config_json["layer_types"] = config_json["layer_types"][: args.keep_num_layers]
+        print(
+            f"Truncated layer_types to {args.keep_num_layers}: {config_json['layer_types']}"
+        )
+
+    full_attn_interval = config_json.get("full_attention_interval")
+    if full_attn_interval is not None:
+        layer_pattern = []
+        for i in range(args.keep_num_layers):
+            if (i + 1) % full_attn_interval == 0:
+                layer_pattern.append("attention")
+            else:
+                layer_pattern.append("linear_attention")
+        print(f"Hybrid model layer pattern (full_attention_interval={full_attn_interval}): {layer_pattern}")
+
+    print(f"Truncated num_hidden_layers: {original_layers} -> {args.keep_num_layers}")
 
 
 def _transform_safetensors_index(args, safetensors_index):
@@ -86,7 +105,6 @@ def _transform_safetensors_file(
 
 
 def _filter_tensor_name(args, tensor_name: str):
-    # We focus on DeepSeek-like names currently, but can be easily extended to more kinds of models
     m = re.match(r"^model.layers.(\d+).*", tensor_name)
     if m is None:
         return True
@@ -97,9 +115,14 @@ def _filter_tensor_name(args, tensor_name: str):
 
 if __name__ == "__main__":
     """
-    Example:
+    Examples:
+
+    # DeepSeek
     python -m sglang.srt.debug_utils.model_truncator --input deepseek-ai/DeepSeek-V3-0324 --output /tmp/DeepSeek-V3-0324-5layer
     hf upload my_name/DeepSeek-V3-0324-5layer /tmp/DeepSeek-V3-0324-5layer
+
+    # Qwen3-Next (4 layers = 3 GDN + 1 Attention when full_attention_interval=4)
+    python -m sglang.srt.debug_utils.model_truncator --input Qwen/Qwen3-Next-80B-A3B-Instruct --output /tmp/Qwen3-Next-4layer --keep-num-layers 4
 
     Alternatively, the following may be used on-the-fly.
     But this may not be useful to test RL frameworks, and sometimes it may have issues.

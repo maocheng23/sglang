@@ -1,5 +1,6 @@
 import enum
 import logging
+import os
 from typing import Any, Iterable, Optional, Set, Tuple
 
 import torch
@@ -56,6 +57,39 @@ from sglang.srt.utils.custom_op import register_custom_op
 logger = logging.getLogger(__name__)
 _is_cuda = is_cuda()
 _is_npu = is_npu()
+
+# ---- Debug layer dump infrastructure ----
+_SGLANG_DEBUG_DUMP = os.environ.get("SGLANG_DEBUG_LAYER_DUMP", "0") == "1"
+_SGLANG_DUMP_DIR = "/tmp/sglang_debug"
+_SGLANG_DUMP_MAX_FWD = int(os.environ.get("SGLANG_DEBUG_DUMP_MAX_FWD", "4"))
+_sglang_dump_fwd_count = [0]
+
+
+def _sdsave(name, tensor):
+    """Save tensor for debug comparison. Dumps first N forward passes with mb suffix, rank 0 only."""
+    if not _SGLANG_DEBUG_DUMP or _sglang_dump_fwd_count[0] >= _SGLANG_DUMP_MAX_FWD:
+        return
+    # Skip during CUDA graph capture — .cpu() is not allowed
+    if torch.cuda.is_current_stream_capturing():
+        return
+    try:
+        rank = get_attention_tp_rank()
+    except Exception:
+        rank = 0
+    if rank != 0:
+        return
+    os.makedirs(_SGLANG_DUMP_DIR, exist_ok=True)
+    mb = _sglang_dump_fwd_count[0]
+    t = tensor.detach().float().cpu()
+    torch.save(t, f"{_SGLANG_DUMP_DIR}/{name}_mb{mb}.pt")
+    print(f"[SGLANG DUMP] mb{mb} {name}: shape={list(t.shape)} mean={t.mean():.8f} std={t.std():.8f} absmax={t.abs().max():.8f}", flush=True)
+
+
+def _sdprint_weight(name, param):
+    if not _SGLANG_DEBUG_DUMP:
+        return
+    t = param.detach().float()
+    print(f"[SGLANG WEIGHT] {name}: shape={list(t.shape)} mean={t.mean():.8f} std={t.std():.8f} absmax={t.abs().max():.8f}", flush=True)
 
 
 import triton
@@ -408,12 +442,27 @@ class Qwen3GatedDeltaNet(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ):
+        # Print weight stats on first call
+        if not hasattr(self, '_weights_printed') and _SGLANG_DEBUG_DUMP:
+            self._weights_printed = True
+            _sdprint_weight(f"gdn{self.layer_id}.in_proj_qkvz", self.in_proj_qkvz.weight)
+            _sdprint_weight(f"gdn{self.layer_id}.in_proj_ba", self.in_proj_ba.weight)
+            _sdprint_weight(f"gdn{self.layer_id}.out_proj", self.out_proj.weight)
+            _sdprint_weight(f"gdn{self.layer_id}.A_log", self.A_log)
+            _sdprint_weight(f"gdn{self.layer_id}.dt_bias", self.dt_bias)
+            _sdprint_weight(f"gdn{self.layer_id}.norm", self.norm.weight)
+            _sdprint_weight(f"gdn{self.layer_id}.conv1d", self.conv1d.weight.squeeze(1))
+
+        _sdsave(f"gdn{self.layer_id}_input", hidden_states)
+
         seq_len, _ = hidden_states.shape
         is_cuda_graph = forward_batch.forward_mode.is_cuda_graph()
 
         projected_states_qkvz, projected_states_ba = self._forward_input_proj(
             hidden_states
         )
+        _sdsave(f"gdn{self.layer_id}_proj_qkvz", projected_states_qkvz)
+        _sdsave(f"gdn{self.layer_id}_proj_ba", projected_states_ba)
 
         if self.num_v_heads // self.num_k_heads in [1, 2, 4] and is_cuda_graph:
             mixed_qkv, z, b, a = fused_qkvzba_split_reshape_cat(
@@ -439,6 +488,7 @@ class Qwen3GatedDeltaNet(nn.Module):
             a=a,
             b=b,
         )
+        _sdsave(f"gdn{self.layer_id}_after_gdr", core_attn_out)
 
         z_shape_og = z.shape
         # reshape input data into 2D tensor
@@ -452,10 +502,18 @@ class Qwen3GatedDeltaNet(nn.Module):
             core_attn_out = core_attn_out_pad
 
         core_attn_out = self.norm(core_attn_out, z)
+        _sdsave(f"gdn{self.layer_id}_after_norm", core_attn_out)
+
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = core_attn_out.reshape(*core_attn_out.shape[:-2], -1)
 
         output, _ = self.out_proj(core_attn_out)
+        _sdsave(f"gdn{self.layer_id}_output", output)
+
+        # Increment forward counter after last GDN layer (skip during CUDA graph capture)
+        if self.layer_id == 2 and not torch.cuda.is_current_stream_capturing():
+            _sglang_dump_fwd_count[0] += 1
+
         return output
 
 
@@ -833,6 +891,9 @@ class Qwen3NextModel(nn.Module):
             hidden_states = inputs_embeds
         else:
             hidden_states = self.embed_tokens(input_ids)
+
+        _sdsave("embedding_output", hidden_states)
+        _sdsave("input_ids", input_ids.float())
 
         residual = None
         for i in range(len(self.layers)):
