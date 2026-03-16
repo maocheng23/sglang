@@ -137,6 +137,7 @@ class RoutedExpertsCapturer(ABC):
     def get_routed_experts(
         self,
         req_pool_idx: int,
+        pre_recorded_experts_length: int,
         seqlen: int,
         req_to_token_pool: ReqToTokenPool,
     ):
@@ -211,11 +212,12 @@ class _RoutedExpertsCapturerReal(RoutedExpertsCapturer):
     def get_routed_experts(
         self,
         req_pool_idx: int,
+        pre_recorded_experts_length: int,
         seqlen: int,
         req_to_token_pool: ReqToTokenPool,
     ):
         cache_pool_idx = (
-            req_to_token_pool.req_to_token[req_pool_idx][: seqlen - 1].cpu().clone()
+            req_to_token_pool.req_to_token[req_pool_idx][pre_recorded_experts_length : seqlen - 1].cpu().clone()
         )
         return self.get_host_cache().buffer[cache_pool_idx]
 
@@ -251,6 +253,7 @@ class _RoutedExpertsCapturerNoop(RoutedExpertsCapturer):
     def get_routed_experts(
         self,
         req_pool_idx: int,
+        pre_recorded_experts_length: int,
         seqlen: int,
         req_to_token_pool: ReqToTokenPool,
     ):

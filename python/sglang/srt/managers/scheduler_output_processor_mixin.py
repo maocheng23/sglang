@@ -65,8 +65,10 @@ class SchedulerOutputProcessorMixin:
 
     def maybe_collect_routed_experts(self: Scheduler, req: Req):
         """Collect routed experts for a finished request."""
+        pre_recorded_experts_length = getattr(req, 'pre_recorded_experts_length', 0) or 0
         req.routed_experts = get_global_experts_capturer().get_routed_experts(
             req_pool_idx=req.req_pool_idx,
+            pre_recorded_experts_length=pre_recorded_experts_length,
             seqlen=req.seqlen,
             req_to_token_pool=self.req_to_token_pool,
         )

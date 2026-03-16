@@ -202,8 +202,8 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
     return_hidden_states: Union[List[bool], bool] = False
     # Whether to return captured routed experts
     return_routed_experts: bool = False
-    # The start location in the prompt for returning routed experts.
-    routed_experts_start_len: int = 0
+    # The number of expert entries already recorded (for incremental return).
+    pre_recorded_experts_length: Optional[Union[List[int], int]] = None
 
     # The modalities of the image data [image, multi-images, video]
     modalities: Optional[List[str]] = None
@@ -639,6 +639,11 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
                 else self.return_hidden_states
             ),
             return_routed_experts=self.return_routed_experts,
+            pre_recorded_experts_length=(
+                self.pre_recorded_experts_length[i]
+                if isinstance(self.pre_recorded_experts_length, list)
+                else self.pre_recorded_experts_length
+            ) if self.pre_recorded_experts_length is not None else None,
             modalities=self.modalities[i] if self.modalities else None,
             session_params=self.session_params,
             lora_path=self.lora_path[i] if self.lora_path is not None else None,
@@ -711,8 +716,8 @@ class TokenizedGenerateReqInput(BaseReq):
 
     # Whether to return captured routed experts
     return_routed_experts: bool = False
-    # The start location in the prompt for returning routed experts.
-    routed_experts_start_len: int = 0
+    # The number of expert entries already recorded (for incremental return).
+    pre_recorded_experts_length: Optional[int] = None
 
     # The input embeds
     input_embeds: Optional[Union[List[List[List[float]]], List[List[float]]]] = None

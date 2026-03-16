@@ -510,6 +510,7 @@ class Req:
         require_reasoning: bool = False,
         return_hidden_states: bool = False,
         return_routed_experts: bool = False,
+        pre_recorded_experts_length: int = 0,
         eos_token_ids: Optional[Set[int]] = None,
         bootstrap_host: Optional[str] = None,
         bootstrap_port: Optional[int] = None,
@@ -712,6 +713,7 @@ class Req:
 
         # capture routed experts
         self.return_routed_experts = return_routed_experts
+        self.pre_recorded_experts_length = pre_recorded_experts_length or 0
         self.routed_experts: Optional[torch.Tensor] = (
             None  # cpu tensor: shape (seqlen, topk)
         )

@@ -523,4 +523,21 @@ class DecodeVerifyRollbackWorker:
         )
 
     def clear_cache_pool(self):
+        # allocator and kv cache pool are shared with target worker
         pass
+
+    def update_weights_from_tensor(self, recv_req):
+        from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+        from sglang.srt.utils import MultiprocessingSerializer
+
+        monkey_patch_torch_reductions()
+        named_tensors = MultiprocessingSerializer.deserialize(
+            recv_req.serialized_named_tensors[self.tp_rank]
+        )
+        # DVR worker shares model_runner with target_worker (same object),
+        # so updating once is sufficient for both draft and target.
+        success, message = self.model_runner.update_weights_from_tensor(
+            named_tensors=named_tensors,
+            load_format=recv_req.load_format,
+        )
+        return success, message
