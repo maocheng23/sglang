@@ -883,6 +883,10 @@ class LogitsProcessor(nn.Module):
                 logits = torch.matmul(
                     hidden_states.bfloat16(), lm_head.weight.T.bfloat16()
                 )
+                import os
+                if int(os.environ.get("SGLANG_DUMPER_ENABLE", "0")) and not torch.cuda.is_current_stream_capturing():
+                    _lg_f = logits.detach().float()
+                    print(f"[SGLANG_LOGITS_DUMP] shape={list(_lg_f.shape)} mean={_lg_f.mean():.8f} absmax={_lg_f.abs().max():.8f} first5={_lg_f.flatten()[:5].tolist()} hs_dtype={hidden_states.dtype}", flush=True)
             else:
                 logits = torch.matmul(
                     hidden_states.to(lm_head.weight.dtype), lm_head.weight.T

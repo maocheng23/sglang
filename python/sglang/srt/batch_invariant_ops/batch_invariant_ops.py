@@ -165,7 +165,6 @@ def _matmul_persistent_triton(
 ):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
-    assert a.dtype == b.dtype, "Incompatible dtypes"
     assert (
         bias is None or bias.dim() == 1
     ), "Currently assuming bias is 1D, let Horace know if you run into this"

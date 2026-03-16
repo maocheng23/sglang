@@ -805,6 +805,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
             is_last_layer=(self.layer_id == self.config.num_hidden_layers - 1),
         )
 
+    # Limit layer dumps to first N forward passes to avoid disk/perf issues
+    _DUMP_MAX_FWD = int(os.environ.get("SGLANG_DUMP_MAX_FWD", "4"))
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -814,6 +817,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
         captured_last_layer_outputs: Optional[List[torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        from sglang.srt.debug_utils.dumper import dumper
+        _do_dump = (dumper._enable
+                    and 0 < dumper._forward_pass_id <= self._DUMP_MAX_FWD)
 
         hidden_states, residual = (
             self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
@@ -824,6 +830,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
                 **kwargs,
             )
         )
+        if _do_dump:
+            dumper.dump(f"layer{self.layer_id:02d}_after_input_ln", hidden_states,
+                        layer_id=self.layer_id)
 
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(
@@ -831,10 +840,16 @@ class Qwen3MoeDecoderLayer(nn.Module):
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
             )
+        if _do_dump:
+            dumper.dump(f"layer{self.layer_id:02d}_after_attn", hidden_states,
+                        layer_id=self.layer_id)
 
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states, residual, forward_batch
         )
+        if _do_dump:
+            dumper.dump(f"layer{self.layer_id:02d}_moe_input", hidden_states,
+                        layer_id=self.layer_id)
 
         should_allreduce_fusion = (
             self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
@@ -850,6 +865,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states = self.mlp(
             hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
         )
+        if _do_dump:
+            dumper.dump(f"layer{self.layer_id:02d}_moe_output", hidden_states,
+                        layer_id=self.layer_id)
 
         if should_allreduce_fusion:
             hidden_states._sglang_needs_allreduce_fusion = True

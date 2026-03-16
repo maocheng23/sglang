@@ -17,6 +17,7 @@
 """Inference-only Qwen2MoE model compatible with HuggingFace weights."""
 
 import logging
+import os
 from contextlib import nullcontext
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -622,12 +623,19 @@ class Qwen2MoeModel(nn.Module):
         input_embeds: torch.Tensor = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> Union[torch.Tensor, PPProxyTensors]:
+        from sglang.srt.debug_utils.dumper import dumper
+        _dump_max = int(os.environ.get("SGLANG_DUMP_MAX_FWD", "4"))
+        _do_dump = (dumper._enable
+                    and 0 < dumper._forward_pass_id <= _dump_max)
+
         if self.pp_group.is_first_rank:
             if input_embeds is None:
                 hidden_states = self.embed_tokens(input_ids)
             else:
                 hidden_states = input_embeds
             residual = None
+            if _do_dump:
+                dumper.dump("embedding_output", hidden_states)
         else:
             assert pp_proxy_tensors is not None
             hidden_states = pp_proxy_tensors["hidden_states"]
@@ -672,11 +680,17 @@ class Qwen2MoeModel(nn.Module):
                 }
             )
         else:
+            if _do_dump:
+                dumper.dump("before_final_layernorm_hidden", hidden_states)
+                if residual is not None:
+                    dumper.dump("before_final_layernorm_residual", residual)
             if hidden_states.shape[0] != 0:
                 if residual is None:
                     hidden_states = self.norm(hidden_states)
                 else:
                     hidden_states, _ = self.norm(hidden_states, residual)
+            if _do_dump:
+                dumper.dump("after_final_layernorm", hidden_states)
 
         if len(aux_hidden_states) == 0:
             return hidden_states

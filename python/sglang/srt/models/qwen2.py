@@ -90,8 +90,8 @@ class Qwen2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        # if get_global_server_args().rl_on_policy_target is not None:
-        #     x = x.bfloat16()
+        if get_global_server_args().rl_on_policy_target is not None:
+            x = x.bfloat16()
 
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
@@ -341,6 +341,8 @@ class Qwen2Model(nn.Module):
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> Union[torch.Tensor, PPProxyTensors]:
 
+        from sglang.srt.debug_utils.dumper import dumper
+
         if self.pp_group.is_first_rank:
             if input_embeds is None:
                 hidden_states = self.embed_tokens(input_ids)
@@ -351,6 +353,8 @@ class Qwen2Model(nn.Module):
             assert pp_proxy_tensors is not None
             hidden_states = pp_proxy_tensors["hidden_states"]
             residual = pp_proxy_tensors["residual"]
+
+        dumper.dump("embedding_output", hidden_states)
 
         aux_hidden_states = []
         for i in range(self.start_layer, self.end_layer):
@@ -373,11 +377,14 @@ class Qwen2Model(nn.Module):
                 }
             )
         else:
+            dumper.dump("before_final_layernorm_hidden", hidden_states)
+            dumper.dump("before_final_layernorm_residual", residual)
             if hidden_states.shape[0] != 0:
                 if residual is None:
                     hidden_states = self.norm(hidden_states)
                 else:
                     hidden_states, _ = self.norm(hidden_states, residual)
+            dumper.dump("after_final_layernorm", hidden_states)
 
         if len(aux_hidden_states) == 0:
             return hidden_states

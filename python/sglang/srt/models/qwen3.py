@@ -139,8 +139,14 @@ class Qwen3Attention(nn.Module):
         self.alt_stream = alt_stream
 
     def forward_prepare_native(self, positions, hidden_states):
+        from sglang.srt.debug_utils.dumper import dumper
         qkv, _ = self.qkv_proj(hidden_states)
+        _lid = self.attn.layer_id
+        _lp = f"layer{_lid:02d}"
+        dumper.dump(f"{_lp}_attn_mixed_qkv", qkv)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        dumper.dump(f"{_lp}_attn_q_before_qknorm", q)
+        dumper.dump(f"{_lp}_attn_k_before_qknorm", k)
         q, k = apply_qk_norm(
             q=q,
             k=k,
@@ -149,6 +155,10 @@ class Qwen3Attention(nn.Module):
             head_dim=self.head_dim,
             alt_stream=self.alt_stream,
         )
+        _lid = self.attn.layer_id
+        _lp = f"layer{_lid:02d}"
+        dumper.dump(f"{_lp}_attn_q_after_qknorm", q)
+        dumper.dump(f"{_lp}_attn_k_after_qknorm", k)
         q, k = self.rotary_emb(positions, q, k)
         return q, k, v
 
@@ -178,6 +188,8 @@ class Qwen3Attention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
+        from sglang.srt.debug_utils.dumper import dumper
+
         if get_global_server_args().rl_on_policy_target is not None:
             hidden_states = hidden_states.bfloat16()
 
@@ -193,11 +205,21 @@ class Qwen3Attention(nn.Module):
                 forward_batch=forward_batch,
             )
 
+        _lid = self.attn.layer_id
+        _lp = f"layer{_lid:02d}"
+
         if get_global_server_args().rl_on_policy_target is not None:
             q = q.to(torch.bfloat16)
             k = k.to(torch.bfloat16)
 
+        dumper.dump(f"{_lp}_attn_q_after_rope", q)
+        dumper.dump(f"{_lp}_attn_k_after_rope", k)
+        dumper.dump(f"{_lp}_attn_v", v)
+
         attn_output = self.attn(q, k, v, forward_batch)
+
+        dumper.dump(f"{_lp}_attn_core_out", attn_output)
+
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -278,6 +300,14 @@ class Qwen3DecoderLayer(nn.Module):
         residual: Optional[torch.Tensor],
         post_residual_addition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        from sglang.srt.debug_utils.dumper import dumper
+        _lid = self.self_attn.attn.layer_id
+        _lp = f"layer{_lid:02d}"
+        dumper.override_enable(_lid <= 1)
+        dumper.set_ctx(layer_id=_lid)
+
+        dumper.dump(f"{_lp}_input", hidden_states)
+
         # Self Attention
         hidden_states, residual = self.layer_communicator.prepare_attn(
             hidden_states,
@@ -285,12 +315,17 @@ class Qwen3DecoderLayer(nn.Module):
             forward_batch,
             post_residual_addition=post_residual_addition,
         )
+
+        dumper.dump(f"{_lp}_after_input_ln", hidden_states)
+
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(
                 positions=positions,
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
             )
+
+        dumper.dump(f"{_lp}_after_attn", hidden_states)
 
         # Fully Connected
         hidden_states, residual = self.layer_communicator.prepare_mlp(
@@ -303,12 +338,23 @@ class Qwen3DecoderLayer(nn.Module):
                 else None
             ),
         )
+
+        dumper.dump(f"{_lp}_moe_input", hidden_states)
+
         hidden_states = self.mlp(hidden_states)
+
+        dumper.dump(f"{_lp}_moe_output", hidden_states)
+
         if _is_npu and get_cmo_stream():
             wait_cmo_stream()
         hidden_states, residual = self.layer_communicator.postprocess_layer(
             hidden_states, residual, forward_batch
         )
+
+        dumper.dump(f"{_lp}_output", hidden_states)
+        dumper.set_ctx(layer_id=None)
+        dumper.override_enable(None)
+
         return hidden_states, residual
 
 
@@ -412,6 +458,9 @@ class Qwen3ForCausalLM(nn.Module):
         get_embedding: bool = False,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> torch.Tensor:
+        from sglang.srt.debug_utils.dumper import dumper
+        dumper.on_forward_pass_start()
+
         hidden_states = self.model(
             input_ids,
             positions,

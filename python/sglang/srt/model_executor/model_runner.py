@@ -2143,6 +2143,10 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         skip_attn_backend_init: bool = False,
         pp_proxy_tensors=None,
     ) -> Union[LogitsProcessorOutput, PPProxyTensors]:
+        if not torch.cuda.is_current_stream_capturing():
+            from sglang.srt.debug_utils.dumper import dumper
+            dumper.on_forward_pass_start()
+
         if not skip_attn_backend_init:
             if self.server_args.enable_pdmux:
                 self.decode_attn_backend.init_forward_metadata(forward_batch)
@@ -2166,6 +2170,10 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         skip_attn_backend_init: bool = False,
         pp_proxy_tensors=None,
     ) -> Union[LogitsProcessorOutput, PPProxyTensors, EmbeddingPoolerOutput]:
+        if not torch.cuda.is_current_stream_capturing():
+            from sglang.srt.debug_utils.dumper import dumper
+            dumper.on_forward_pass_start()
+
         kwargs = {}
         if self.support_pp:
             kwargs["pp_proxy_tensors"] = pp_proxy_tensors
