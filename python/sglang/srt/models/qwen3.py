@@ -261,6 +261,7 @@ class Qwen3DecoderLayer(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("mlp", prefix),
         )
+        self.mlp._sglang_layer_idx = layer_id
 
         norm_kwargs = (
             dict(

@@ -561,7 +561,20 @@ def mean_dim(
     return output
 
 
+_dbg_mm_count = 0
+
 def mm_batch_invariant(a, b):
+    # #region agent log
+    global _dbg_mm_count
+    if _dbg_mm_count < 3:
+        try:
+            import torch.distributed as _dist_mm
+            _r_mm = _dist_mm.get_rank() if _dist_mm.is_initialized() else 0
+            if _r_mm == 0:
+                print(f"[DBG2dcb4d] mm_batch_invariant called: a_shape={list(a.shape)} b_shape={list(b.shape)} a_dtype={a.dtype} b_dtype={b.dtype}", flush=True)
+                _dbg_mm_count += 1
+        except Exception: pass
+    # #endregion
     return matmul_persistent(a, b)
 
 

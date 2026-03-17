@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -91,6 +92,14 @@ class Sampler(nn.Module):
 
         # Preprocess logits (custom processors and NaN handling)
         logits = self._preprocess_logits(logits, sampling_info)
+
+        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1":
+            import torch.distributed as _dist
+            _rank_s = _dist.get_rank() if _dist.is_initialized() else 0
+            print(f"[DBG_TP8] SGLANG sampler_logits rank={_rank_s} "
+                  f"shape={list(logits.shape)} dtype={logits.dtype} "
+                  f"logits[0,:5]={logits[0,:5].tolist()} "
+                  f"logits[0,-5:]={logits[0,-5:].tolist()}")
 
         if sampling_info.is_all_greedy:
             # Use torch.argmax if all requests use greedy sampling
@@ -199,6 +208,13 @@ class Sampler(nn.Module):
                 torch.arange(len(batch_next_token_ids), device=sampling_info.device),
                 batch_next_token_ids,
             ]
+
+            if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1":
+                import torch.distributed as _dist
+                _rank_s2 = _dist.get_rank() if _dist.is_initialized() else 0
+                print(f"[DBG_TP8] SGLANG final_logprobs rank={_rank_s2} "
+                      f"token_ids={batch_next_token_ids.tolist()} "
+                      f"logprobs={logits_output.next_token_logprobs.tolist()}")
 
         if SYNC_TOKEN_IDS_ACROSS_TP or sampling_info.grammars:
             # For performance reasons, SGLang does not sync the final token IDs across TP ranks by default.

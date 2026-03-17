@@ -90,11 +90,17 @@ class Qwen2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
+        from sglang.srt.debug_utils.dumper import dumper
         if get_global_server_args().rl_on_policy_target is not None:
             x = x.bfloat16()
 
         gate_up, _ = self.gate_up_proj(x)
+        _li = getattr(self, '_sglang_layer_idx', -1)
+        if _li >= 0:
+            dumper.dump(f"layer{_li:02d}_mlp_gate_up_out", gate_up)
         x = self.act_fn(gate_up)
+        if _li >= 0:
+            dumper.dump(f"layer{_li:02d}_mlp_act_out", x)
         x, _ = self.down_proj(x)
         return x
 

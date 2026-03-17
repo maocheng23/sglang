@@ -15,6 +15,7 @@
 
 import dataclasses
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -879,14 +880,27 @@ class LogitsProcessor(nn.Module):
                     True,  # is_vnni
                 )
             elif get_global_server_args().rl_on_policy_target is not None:
-                # Due to tie-weight, we may not be able to change lm_head's weight dtype
+                # #region agent log
+                try:
+                    import torch.distributed as _dist_sg
+                    _r_sg = _dist_sg.get_rank() if _dist_sg.is_initialized() else 0
+                    if _r_sg == 0:
+                        _hs_sg = hidden_states.detach().float().reshape(-1)
+                        print(f"[DBG2dcb4d] SGLANG lm_head_pre: hs_shape={list(hidden_states.shape)} hs_ndim={hidden_states.ndim} hs_dtype={hidden_states.dtype} hs_first5={_hs_sg[:5].tolist()} hs_norm={_hs_sg.norm().item():.6f} w_shape={list(lm_head.weight.shape)}", flush=True)
+                except Exception: pass
+                # #endregion
                 logits = torch.matmul(
                     hidden_states.bfloat16(), lm_head.weight.T.bfloat16()
                 )
-                import os
-                if int(os.environ.get("SGLANG_DUMPER_ENABLE", "0")) and not torch.cuda.is_current_stream_capturing():
-                    _lg_f = logits.detach().float()
-                    print(f"[SGLANG_LOGITS_DUMP] shape={list(_lg_f.shape)} mean={_lg_f.mean():.8f} absmax={_lg_f.abs().max():.8f} first5={_lg_f.flatten()[:5].tolist()} hs_dtype={hidden_states.dtype}", flush=True)
+                # #region agent log
+                try:
+                    import torch.distributed as _dist_sg2
+                    _r_sg2 = _dist_sg2.get_rank() if _dist_sg2.is_initialized() else 0
+                    if _r_sg2 == 0:
+                        _lg_sg = logits.detach().float().reshape(-1)
+                        print(f"[DBG2dcb4d] SGLANG lm_head_post: logits_shape={list(logits.shape)} logits_dtype={logits.dtype} logits_first5={_lg_sg[:5].tolist()} logits_norm={_lg_sg.norm().item():.6f}", flush=True)
+                except Exception: pass
+                # #endregion
             else:
                 logits = torch.matmul(
                     hidden_states.to(lm_head.weight.dtype), lm_head.weight.T
@@ -906,6 +920,13 @@ class LogitsProcessor(nn.Module):
 
         if self.logit_scale is not None:
             logits.mul_(self.logit_scale)
+
+        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1":
+            import torch.distributed as _dist
+            _rank_lp = _dist.get_rank() if _dist.is_initialized() else 0
+            print(f"[DBG_TP8] SGLANG partial_logits rank={_rank_lp} "
+                  f"shape={list(logits.shape)} dtype={logits.dtype} "
+                  f"logits[0,:5]={logits[0,:5].tolist()}")
 
         if self.do_tensor_parallel_all_gather:
             if self.use_attn_tp_group:
@@ -948,6 +969,15 @@ class LogitsProcessor(nn.Module):
                 logits,
             )
             dp_scatter(logits, global_logits, logits_metadata)
+
+        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1":
+            import torch.distributed as _dist
+            _rank_ag = _dist.get_rank() if _dist.is_initialized() else 0
+            print(f"[DBG_TP8] SGLANG after_allgather rank={_rank_ag} "
+                  f"shape={list(logits.shape)} dtype={logits.dtype} "
+                  f"logits[0,:5]={logits[0,:5].tolist()} "
+                  f"logits[0,-5:]={logits[0,-5:].tolist()} "
+                  f"vocab_size={self.config.vocab_size}")
 
         if logits_metadata.next_token_logits_buffer is not None:
             logits_buffer = logits_metadata.next_token_logits_buffer
