@@ -187,6 +187,8 @@ class RMSNorm(MultiPlatformOp):
         rms_norm(out, x, self.weight.data, self.variance_epsilon)
         return out
 
+    _fn_debug_count = 0
+
     def forward_native(
         self,
         x: torch.Tensor,
@@ -196,6 +198,10 @@ class RMSNorm(MultiPlatformOp):
         if not x.is_contiguous():
             x = x.contiguous()
         orig_dtype = self.override_orig_dtype or x.dtype
+        import os
+        if int(os.environ.get("SGLANG_DUMPER_ENABLE", "0")) and RMSNorm._fn_debug_count < 200:
+            RMSNorm._fn_debug_count += 1
+            print(f"[RMSNORM_DEBUG] x.dtype={x.dtype} residual={None if residual is None else residual.dtype} override={self.override_orig_dtype} fp32_res={self.fp32_residual} orig_dtype={orig_dtype}", flush=True)
         if residual is not None and not self.fp32_residual:
             x = x + residual
             residual = x.clone()

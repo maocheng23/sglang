@@ -575,6 +575,11 @@ def mm_batch_invariant(a, b):
                 _dbg_mm_count += 1
         except Exception: pass
     # #endregion
+    # Handle mixed dtypes: Triton matmul_persistent requires same dtype for both operands.
+    # Cast to bf16 to match SGLang on-policy forward pass behavior.
+    if a.dtype != b.dtype:
+        a = a.to(torch.bfloat16)
+        b = b.to(torch.bfloat16)
     return matmul_persistent(a, b)
 
 

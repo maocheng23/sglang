@@ -881,25 +881,27 @@ class LogitsProcessor(nn.Module):
                 )
             elif get_global_server_args().rl_on_policy_target is not None:
                 # #region agent log
-                try:
-                    import torch.distributed as _dist_sg
-                    _r_sg = _dist_sg.get_rank() if _dist_sg.is_initialized() else 0
-                    if _r_sg == 0:
-                        _hs_sg = hidden_states.detach().float().reshape(-1)
-                        print(f"[DBG2dcb4d] SGLANG lm_head_pre: hs_shape={list(hidden_states.shape)} hs_ndim={hidden_states.ndim} hs_dtype={hidden_states.dtype} hs_first5={_hs_sg[:5].tolist()} hs_norm={_hs_sg.norm().item():.6f} w_shape={list(lm_head.weight.shape)}", flush=True)
-                except Exception: pass
+                if not torch.cuda.is_current_stream_capturing():
+                    try:
+                        import torch.distributed as _dist_sg
+                        _r_sg = _dist_sg.get_rank() if _dist_sg.is_initialized() else 0
+                        if _r_sg == 0:
+                            _hs_sg = hidden_states.detach().float().reshape(-1)
+                            print(f"[DBG2dcb4d] SGLANG lm_head_pre: hs_shape={list(hidden_states.shape)} hs_ndim={hidden_states.ndim} hs_dtype={hidden_states.dtype} hs_first5={_hs_sg[:5].tolist()} hs_norm={_hs_sg.norm().item():.6f} w_shape={list(lm_head.weight.shape)}", flush=True)
+                    except Exception: pass
                 # #endregion
                 logits = torch.matmul(
                     hidden_states.bfloat16(), lm_head.weight.T.bfloat16()
                 )
                 # #region agent log
-                try:
-                    import torch.distributed as _dist_sg2
-                    _r_sg2 = _dist_sg2.get_rank() if _dist_sg2.is_initialized() else 0
-                    if _r_sg2 == 0:
-                        _lg_sg = logits.detach().float().reshape(-1)
-                        print(f"[DBG2dcb4d] SGLANG lm_head_post: logits_shape={list(logits.shape)} logits_dtype={logits.dtype} logits_first5={_lg_sg[:5].tolist()} logits_norm={_lg_sg.norm().item():.6f}", flush=True)
-                except Exception: pass
+                if not torch.cuda.is_current_stream_capturing():
+                    try:
+                        import torch.distributed as _dist_sg2
+                        _r_sg2 = _dist_sg2.get_rank() if _dist_sg2.is_initialized() else 0
+                        if _r_sg2 == 0:
+                            _lg_sg = logits.detach().float().reshape(-1)
+                            print(f"[DBG2dcb4d] SGLANG lm_head_post: logits_shape={list(logits.shape)} logits_dtype={logits.dtype} logits_first5={_lg_sg[:5].tolist()} logits_norm={_lg_sg.norm().item():.6f}", flush=True)
+                    except Exception: pass
                 # #endregion
             else:
                 logits = torch.matmul(
@@ -921,7 +923,7 @@ class LogitsProcessor(nn.Module):
         if self.logit_scale is not None:
             logits.mul_(self.logit_scale)
 
-        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1":
+        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1" and not torch.cuda.is_current_stream_capturing():
             import torch.distributed as _dist
             _rank_lp = _dist.get_rank() if _dist.is_initialized() else 0
             print(f"[DBG_TP8] SGLANG partial_logits rank={_rank_lp} "
@@ -970,7 +972,7 @@ class LogitsProcessor(nn.Module):
             )
             dp_scatter(logits, global_logits, logits_metadata)
 
-        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1":
+        if os.environ.get("SLIME_DEBUG_LOGPROB_DIFF") == "1" and not torch.cuda.is_current_stream_capturing():
             import torch.distributed as _dist
             _rank_ag = _dist.get_rank() if _dist.is_initialized() else 0
             print(f"[DBG_TP8] SGLANG after_allgather rank={_rank_ag} "

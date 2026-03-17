@@ -590,7 +590,24 @@ class Qwen3MoeAttention(nn.Module):
     ):
         qkv, _ = self.qkv_proj(hidden_states)
 
+        # Dump QKV before QK-norm
+        if getattr(getattr(self, 'attn', None), 'layer_id', -1) == 0:
+            from sglang.srt.debug_utils.dumper import dumper
+            if dumper._enable and 0 < dumper._forward_pass_id <= 4:
+                dumper.dump("layer00_attn_mixed_qkv", qkv, layer_id=0)
+                _q, _k, _v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+                dumper.dump("layer00_attn_q_before_qknorm", _q, layer_id=0)
+                dumper.dump("layer00_attn_k_before_qknorm", _k, layer_id=0)
+
         q, k, v = self.apply_qk_norm_rope(qkv, positions, forward_batch)
+
+        # Dump Q/K/V after QK-norm + RoPE
+        if getattr(getattr(self, 'attn', None), 'layer_id', -1) == 0:
+            from sglang.srt.debug_utils.dumper import dumper
+            if dumper._enable and 0 < dumper._forward_pass_id <= 4:
+                dumper.dump("layer00_attn_q_after_rope", q, layer_id=0)
+                dumper.dump("layer00_attn_k_after_rope", k, layer_id=0)
+                dumper.dump("layer00_attn_v", v, layer_id=0)
 
         inner_state = q, k, v, forward_batch
         return None, forward_batch, inner_state
@@ -633,6 +650,12 @@ class Qwen3MoeAttention(nn.Module):
                 head_dim=self.head_dim,
                 alt_stream=self.alt_stream,
             )
+            # Dump Q/K after QK-norm, before RoPE
+            if getattr(getattr(self, 'attn', None), 'layer_id', -1) == 0:
+                from sglang.srt.debug_utils.dumper import dumper
+                if dumper._enable and 0 < dumper._forward_pass_id <= 4:
+                    dumper.dump("layer00_attn_q_after_qknorm", q, layer_id=0)
+                    dumper.dump("layer00_attn_k_after_qknorm", k, layer_id=0)
             q, k = self.rotary_emb(
                 positions,
                 q,
@@ -691,7 +714,23 @@ class Qwen3MoeAttention(nn.Module):
             fb,
             save_kv_cache=save_kv_cache,
         )
+
+        # Dump attention core output (before o_proj)
+        if getattr(getattr(self, 'attn', None), 'layer_id', -1) == 0:
+            from sglang.srt.debug_utils.dumper import dumper
+            if dumper._enable and 0 < dumper._forward_pass_id <= 4:
+                dumper.dump("layer00_attn_core_out", attn_output, layer_id=0)
+
         output, _ = self.o_proj(attn_output)
+
+        # Dump o_proj output and weight (before allreduce in communicator)
+        if getattr(getattr(self, 'attn', None), 'layer_id', -1) == 0:
+            from sglang.srt.debug_utils.dumper import dumper
+            if dumper._enable and 0 < dumper._forward_pass_id <= 4:
+                dumper.dump("layer00_attn_o_proj_out", output, layer_id=0)
+                dumper.dump("layer00_oproj_weight", self.o_proj.weight, layer_id=0)
+                dumper.dump("layer00_oproj_input", attn_output, layer_id=0)
+
         return output
 
     def forward(
@@ -844,6 +883,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
             dumper.dump(f"layer{self.layer_id:02d}_after_attn", hidden_states,
                         layer_id=self.layer_id)
 
+        # Tag layernorm with layer_id for dump in communicator
+        if hasattr(self, 'post_attention_layernorm'):
+            self.post_attention_layernorm._layer_id_for_dump = self.layer_id
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states, residual, forward_batch
         )

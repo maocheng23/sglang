@@ -828,6 +828,16 @@ class CommunicateWithAllReduceAndLayerNormFn:
                         hidden_states = tensor_model_parallel_all_reduce(hidden_states)
                 else:
                     hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+
+                # Dump post-allreduce (before residual+layernorm) for layer 0
+                if hasattr(layernorm, '_layer_id_for_dump'):
+                    _lid = layernorm._layer_id_for_dump
+                    if _lid == 0:
+                        from sglang.srt.debug_utils.dumper import dumper
+                        if dumper._enable and 0 < dumper._forward_pass_id <= 4:
+                            dumper.dump("layer00_post_allreduce_pre_ln", hidden_states, layer_id=0)
+                            dumper.dump("layer00_residual_at_post_attn_ln", residual, layer_id=0)
+
                 if _is_npu and context.cache is not None:
                     _ = prepare_weight_cache(hidden_states, context.cache)
                 hidden_states, residual = layernorm(hidden_states, residual)
