@@ -512,7 +512,7 @@ class Qwen3GatedDeltaNet(nn.Module):
 
         # Increment forward counter after last GDN layer (skip during CUDA graph capture)
         if self.layer_id == 2 and not torch.cuda.is_current_stream_capturing():
-            _sglang_dump_fwd_count[0] += 1
+            pass  # fwd counter moved to model level
 
         return output
 
@@ -906,12 +906,16 @@ class Qwen3NextModel(nn.Module):
                     residual=residual,
                     forward_batch=forward_batch,
                 )
+            _sdsave(f"layer{i:02d}_output", hidden_states)
 
         if not forward_batch.forward_mode.is_idle():
             if residual is None:
                 hidden_states = self.norm(hidden_states)
             else:
                 hidden_states, _ = self.norm(hidden_states, residual)
+
+        _sdsave("after_final_layernorm", hidden_states)
+        _sglang_dump_fwd_count[0] += 1
 
         return hidden_states
 

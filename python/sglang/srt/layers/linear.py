@@ -1423,7 +1423,12 @@ class RowParallelLinear(LinearBase):
         with use_symmetric_memory(
             get_tp_group(), disabled=not is_allocation_symmetric()
         ):
-            if is_tp_invariant_mode_enabled() and os.environ.get("ROW_LINEAR_ENABLE_INV", "0") == "1":
+            # matmul_tp_persistent requires K divisible by BLOCK_K (128).
+            # Fall back to regular F.linear for small dimensions (e.g. MoE expert K=64).
+            _K = input_parallel.shape[-1]
+            if (is_tp_invariant_mode_enabled()
+                    and os.environ.get("ROW_LINEAR_ENABLE_INV", "0") == "1"
+                    and _K >= 128 and _K % 128 == 0):
                 output_parallel = torch.ops.tp_inv_ops.matmul_tp_inv(
                     input_parallel, self.weight.t()
                 )
