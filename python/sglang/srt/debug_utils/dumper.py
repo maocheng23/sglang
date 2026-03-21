@@ -54,8 +54,11 @@ class _Dumper:
     def on_forward_pass_start(self):
         """This should be called on all ranks."""
 
-        # Even if SGLANG_DUMPER_ENABLE=0, users may want to use HTTP endpoint to enable it
-        self._ensure_http_server()
+        # Only start HTTP/ZMQ server if dumper is enabled.
+        # With multiple SGLang engines on the same machine, the ZMQ port
+        # binding will fail if all engines try to bind the same ports.
+        if self._enable:
+            self._ensure_http_server()
 
         if not self._enable:
             return
@@ -101,10 +104,9 @@ class _Dumper:
             self.dump(f"{name_prefix}_{name}", value, save=save, **kwargs)
 
     def dump(self, name, value, save: bool = True, **kwargs):
-        self._ensure_http_server()
-
         if not (self._enable and (self._override_enable is not False)):
             return
+        self._ensure_http_server()
         if (f := self._filter) is not None and re.search(f, name) is None:
             return
 
