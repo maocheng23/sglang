@@ -339,7 +339,7 @@ class CudaGraphRunner:
 
         enable_mamba_track = (
             self.model_runner.server_args.enable_mamba_extra_buffer()
-            and self.model_runner.spec_algorithm.is_none()
+            # and self.model_runner.spec_algorithm.is_none()
         )
 
         if self.require_gathered_buffer:
@@ -484,20 +484,23 @@ class CudaGraphRunner:
     def _patch_prefill_only_deterministic_inference(self):
         use_accl = os.getenv("ACCL_BINARY_TREE_ENABLE") == "1"
         try:
+            origin_rl_on_policy_target = get_global_server_args().rl_on_policy_target
             if (
-                self.model_runner.server_args.enable_prefill_only_deterministic_inference and 
-                not getattr(self.model_runner, "enable_dvr_target_verify_cuda_graph", False)
+                self.model_runner.server_args.enable_prefill_only_deterministic_inference
+                and not getattr(
+                    self.model_runner, "enable_dvr_target_verify_cuda_graph", False
+                )
             ):
                 self.model_runner.server_args.enable_deterministic_inference = False
                 self.model_runner.server_args.enable_flashinfer_allreduce_fusion = True
                 self.model_runner.server_args.rl_on_policy_target = None
                 os.environ["SGLANG_ENABLE_DETERMINISTIC_INFERENCE"] = "0"
+                os.environ["SGLANG_DISABLE_CUSTOM_ALL_REDUCE"] = "0"
                 if use_accl:
                     os.environ["ACCL_BINARY_TREE_ENABLE"] = "0"
                 else:
                     os.environ.pop("NCCL_ALGO", None)
                 self.model_runner.attn_backend.num_splits = 0
-                self.model_runner.server_args.disable_custom_all_reduce = False
                 disable_batch_invariant_mode()
                 disable_tp_invariant_mode()
                 get_global_server_args().enable_deterministic_inference = False
@@ -512,6 +515,7 @@ class CudaGraphRunner:
                 self.model_runner.server_args.enable_flashinfer_allreduce_fusion = False
                 self.model_runner.server_args.rl_on_policy_target = "fsdp_tp"
                 os.environ["SGLANG_ENABLE_DETERMINISTIC_INFERENCE"] = "1"
+                os.environ["SGLANG_DISABLE_CUSTOM_ALL_REDUCE"] = "1"
                 if use_accl:
                     os.environ["ACCL_BINARY_TREE_ENABLE"] = "1"
                 else:
@@ -522,7 +526,9 @@ class CudaGraphRunner:
                 enable_tp_invariant_mode()
                 get_global_server_args().enable_deterministic_inference = True
                 get_global_server_args().enable_flashinfer_allreduce_fusion = False
-                get_global_server_args().rl_on_policy_target = "fsdp_tp"
+                get_global_server_args().rl_on_policy_target = (
+                    origin_rl_on_policy_target
+                )
 
     def capture(self) -> None:
         profile_context = empty_context()
@@ -830,7 +836,7 @@ class CudaGraphRunner:
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ):
         buffers = self.buffers
-        self.recapture_if_needed(forward_batch)
+        # self.recapture_if_needed(forward_batch)
 
         raw_bs = forward_batch.batch_size
         raw_num_token = raw_bs * self.num_tokens_per_bs
@@ -944,6 +950,7 @@ class CudaGraphRunner:
         if (
             self.model_runner.spec_algorithm.is_eagle()
             or self.model_runner.spec_algorithm.is_standalone()
+            or getattr(self.model_runner, "enable_dvr_target_verify_cuda_graph", None)
         ):
             from sglang.srt.speculative.eagle_info import EagleVerifyInput
 
