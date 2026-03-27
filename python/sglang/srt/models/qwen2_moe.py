@@ -326,8 +326,20 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
 
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
+
         if self.tp_size > 1 and not use_reduce_scatter:
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+            # Use deterministic tree_all_reduce for on-policy alignment.
+            # tree_all_reduce is NOT CUDA-graph-capturable (uses dist.all_gather),
+            # so fall back to NCCL for graph capture/replay.
+            import torch
+            from sglang.srt.server_args import get_global_server_args
+            _use_tree = (get_global_server_args().rl_on_policy_target == "fsdp_tp"
+                         and not torch.cuda.is_current_stream_capturing())
+            if _use_tree:
+                from sglang.srt.distributed import tensor_model_parallel_tree_all_reduce
+                final_hidden_states = tensor_model_parallel_tree_all_reduce(final_hidden_states)
+            else:
+                final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
