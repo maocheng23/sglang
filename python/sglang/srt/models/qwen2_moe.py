@@ -324,8 +324,37 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
             shared_output = self._forward_shared_experts(hidden_states)
             final_hidden_states = self._forward_router_experts(hidden_states)
 
+        # --- MoE sub-dumps for true-on-policy debugging ---
+        import os as _moe_os
+        import torch as _moe_torch
+        _MOE_DUMP = _moe_os.environ.get("SGLANG_SAVE_CMP", "0") == "1"
+        if _MOE_DUMP and not _moe_torch.cuda.is_current_stream_capturing():
+            try:
+                _moe_rank = _moe_torch.distributed.get_rank() if _moe_torch.distributed.is_initialized() else 0
+            except Exception:
+                _moe_rank = 0
+            if _moe_rank == 0 and not hasattr(self, '_moe_dump_ctr'):
+                self._moe_dump_ctr = [0]
+            if _moe_rank == 0 and self._moe_dump_ctr[0] < 6:
+                _moe_torch.cuda.synchronize()
+                _d = "/tmp/sglang_cmp"
+                _moe_os.makedirs(_d, exist_ok=True)
+                _fwd = self._moe_dump_ctr[0]
+                _lid = self.layer_id
+                if shared_output is not None:
+                    _moe_torch.save(shared_output.detach().clone().float().cpu(),
+                               f"{_d}/fwd{_fwd}_layer{_lid:02d}_moe_shared_expert.pt")
+                _moe_torch.save(final_hidden_states.detach().clone().float().cpu(),
+                           f"{_d}/fwd{_fwd}_layer{_lid:02d}_moe_fused_experts.pt")
+
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
+
+        if _MOE_DUMP and not _moe_torch.cuda.is_current_stream_capturing():
+            if _moe_rank == 0 and self._moe_dump_ctr[0] < 6:
+                _moe_torch.cuda.synchronize()
+                _moe_torch.save(final_hidden_states.detach().clone().float().cpu(),
+                           f"{_d}/fwd{_fwd}_layer{_lid:02d}_moe_before_allreduce.pt")
 
         if self.tp_size > 1 and not use_reduce_scatter:
             # Use deterministic tree_all_reduce for on-policy alignment.
@@ -340,6 +369,13 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
                 final_hidden_states = tensor_model_parallel_tree_all_reduce(final_hidden_states)
             else:
                 final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+
+        if _MOE_DUMP and not _moe_torch.cuda.is_current_stream_capturing():
+            if _moe_rank == 0 and self._moe_dump_ctr[0] < 6:
+                _moe_torch.cuda.synchronize()
+                _moe_torch.save(final_hidden_states.detach().clone().float().cpu(),
+                           f"{_d}/fwd{_fwd}_layer{_lid:02d}_moe_after_allreduce.pt")
+                self._moe_dump_ctr[0] += 1
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 

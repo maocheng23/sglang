@@ -480,10 +480,13 @@ def _save_cmp(name, tensor, forward_batch=None):
         rank = 0
     if rank != 0:
         return
+    torch.cuda.synchronize()
     fwd = _save_cmp_ctr[0]
     d = "/tmp/sglang_cmp"
     _cmp_os.makedirs(d, exist_ok=True)
-    t = tensor.detach().float().cpu()
+    t = tensor.detach().clone().float().cpu()
+    norm_val = t.norm().item()
+    print(f"[SAVE_CMP] fwd{fwd}_{name}: shape={t.shape} norm={norm_val:.6f}", flush=True)
     torch.save(t, d + "/fwd" + str(fwd) + "_" + name + ".pt")
 
 
