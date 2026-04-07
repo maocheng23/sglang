@@ -18,7 +18,7 @@ def main(args):
 
     dir_output.mkdir(parents=True, exist_ok=True)
 
-    for pattern in ["generation_config.json", "*.py", "tokenizer*"]:
+    for pattern in ["generation_config.json", "*.py", "tokenizer*", "vocab*", "merges*"]:
         os.system(f"cp -rf {dir_input}/{pattern} {dir_output}")
 
     _transform_json(
