@@ -770,10 +770,6 @@ class Envs:
     # front reads hidden_states once, and run the top-k plus the bf16 cast in one
     # epilogue kernel. See kernels/ops/moe/moe_front.py. Default on.
     SGLANG_K3_FUSED_FRONT = EnvBool(True)
-    # Fuse the K3 MoE-front prep chain (radix routing + trtllm id pack + mxfp8
-    # quant) into one launch at decode batch sizes on the trtllm-gen SiTU
-    # runner. See srt/layers/moe/route_quant_handoff.py. Default on.
-    SGLANG_K3_ROUTE_QUANT_FUSE = EnvBool(True)
 
     # sgl-kernel
     SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK = EnvBool(False)
