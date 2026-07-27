@@ -172,6 +172,69 @@ def symm_alloc():
             _cuda_beginAllocateCurrentThreadToPool(device_index, graph_pool_id)
 
 
+_GRAPHS_ACTIVE: Optional[bool] = None
+
+
+def _eager_call_with_graphs_active() -> bool:
+    """True for a fused-AR call issued OUTSIDE capture on a server that uses
+    CUDA graphs.
+
+    The fused comm family assumes allocation and dispatch stay TP-uniform
+    (see _find_mc_ptr). With captured graphs in the process, eager forwards
+    (prefill / small extends) lose that uniformity -- the graph pool shifts
+    the symm allocator's reuse phase per rank, so ranks resolve different
+    (segment, offset) pairs for the same logical call and the NVLS reduce
+    sums misaligned multicast windows (garbage output, worst on extends
+    <= attn_res_block_size). Route those calls to the regular all-reduce;
+    captured graphs keep the fused path (capture is lockstep and replays
+    are pointer-stable).
+    """
+    global _GRAPHS_ACTIVE
+    if _GRAPHS_ACTIVE is None:
+        try:
+            from sglang.srt.runtime_context import get_server_args
+
+            _GRAPHS_ACTIVE = not get_server_args().disable_cuda_graph
+        except Exception:
+            _GRAPHS_ACTIVE = True  # conservative: prefer the safe path
+    return _GRAPHS_ACTIVE and not torch.cuda.is_current_stream_capturing()
+
+
+def _fallback_all_reduce(
+    x: torch.Tensor, residual: Optional[torch.Tensor]
+) -> torch.Tensor:
+    from sglang.srt.distributed import tensor_model_parallel_all_reduce
+
+    out = tensor_model_parallel_all_reduce(x)
+    if residual is not None:
+        # writing the sum into x absorbs the copy-back when the all-reduce
+        # is out-of-place, and degenerates to an in-place add when it is not
+        torch.add(out, residual, out=x)
+    elif out is not x:
+        x.copy_(out)
+    return x
+
+
+def _fallback_all_reduce_norm(
+    x: torch.Tensor, weight: torch.Tensor, eps: float, num_tokens: int
+) -> torch.Tensor:
+    from flashinfer.norm import rmsnorm
+
+    from sglang.srt.distributed import tensor_model_parallel_all_reduce
+
+    # Same epilogue as the fused kernels (fp32 accumulate, fp32 weight
+    # multiply, one bf16 store -- see ar_fusion.cuh). Norming straight into
+    # x absorbs the copy-back when the all-reduce is out-of-place, and is a
+    # safe in-place update when it is not (each thread only stores back the
+    # elements it loaded). Only the un-normed tail -- the shared rows of the
+    # flat latent|shared buffer -- is left to copy.
+    out = tensor_model_parallel_all_reduce(x)
+    rmsnorm(out[:num_tokens], weight, eps, out=x[:num_tokens])
+    if out is not x and out.shape[0] > num_tokens:
+        x[num_tokens:].copy_(out[num_tokens:])
+    return x
+
+
 def _find_mc_ptr(state: _State, x: torch.Tensor) -> int:
     """Multicast VA of ``x`` (contract: allocated under :func:`symm_alloc`).
 
@@ -206,6 +269,8 @@ def all_reduce(
     assert state is not None
     if x.shape[0] == 0:
         return x if residual is None else x + residual
+    if _eager_call_with_graphs_active():
+        return _fallback_all_reduce(x, residual)
     nbytes = x.numel() * 2
     if nbytes <= min(_PUSH_MAX_BYTES, state.comm.max_push_size):
         return mod.all_reduce_push_res(
@@ -239,6 +304,8 @@ def all_reduce_low_sm(
     assert state is not None
     if x.shape[0] == 0:
         return x if residual is None else x + residual
+    if _eager_call_with_graphs_active():
+        return _fallback_all_reduce(x, residual)
     return mod.all_reduce_pull_res(
         state.world_size,
         x,
@@ -270,6 +337,8 @@ def all_reduce_norm(
     assert state is not None
     if x.shape[0] == 0:
         return x
+    if _eager_call_with_graphs_active():
+        return _fallback_all_reduce_norm(x, weight, eps, num_tokens)
     nbytes = x.numel() * 2
     if nbytes <= min(_PUSH_MAX_BYTES, state.comm.max_push_size):
         return mod.all_reduce_push_norm(
@@ -297,6 +366,8 @@ def finalize_push_fits(num_tokens: int) -> bool:
     finalize + :func:`all_reduce_norm` NVLS path)."""
     state = _STATE
     assert state is not None
+    if _eager_call_with_graphs_active():
+        return False
     nbytes = num_tokens * NORM_DIM * 2
     return nbytes <= min(_PUSH_MAX_BYTES, state.comm.max_push_size)
 
@@ -310,6 +381,8 @@ def gemm_ag_up_fits(num_tokens: int) -> bool:
 
     state = _STATE
     assert state is not None
+    if _eager_call_with_graphs_active():
+        return False
     comm = state.comm
     return (
         0 < num_tokens <= mod.MAX_TOKENS
