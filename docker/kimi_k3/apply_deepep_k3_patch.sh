@@ -1,6 +1,5 @@
 #!/bin/bash
-# Kimi-K3 DeepEP patch + rebuild — IMAGE-BUILD variant of the devbox runtime
-# patcher (k3-track p0-wideep/scripts/v1/apply_deepep_topk16_patch.sh).
+# Kimi-K3 DeepEP patch + rebuild -- IMAGE-BUILD variant of the runtime patcher.
 #
 # Stock DeepEP (deepseek-ai@d28bd67, shipped in the base image at
 # /sgl-workspace/DeepEP) does not serve Kimi-K3:

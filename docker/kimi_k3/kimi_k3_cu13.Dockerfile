@@ -6,11 +6,11 @@
 #
 # This image adds the three Kimi-K3-specific pieces that stock lacks:
 #   1. the Kimi-K3 SGLang code (this repo), editable-installed
-#   2. DeepEP patch + rebuild   [k3-track p0-wideep/scripts/v1]:
+#   2. DeepEP patch + rebuild:
 #        topk 11->16, SWITCH_HIDDEN += 3584, EP>8 SourceMeta alignment,
 #        cross-node timeout headroom, CUDA-13 cccl include; rebuilt for
 #        sm_90, sm_100a, and sm_103a
-#   3. DeepGEMM mega-MoE SiTU patch [k3-track p0-wideep/scripts/v2]:
+#   3. DeepGEMM mega-MoE SiTU patch:
 #        JIT-header sentinel (activation_clamp==0.03125 -> K3 SiTU); no rebuild
 #   4. FlashInfer CuTeDSL MLA DCP patch:
 #        apply the seven runtime-file diffs; exclude tests absent from the wheel
