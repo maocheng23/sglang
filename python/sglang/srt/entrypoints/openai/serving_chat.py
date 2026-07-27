@@ -886,13 +886,6 @@ class OpenAIServingChat(OpenAIServingBase):
         required_parsed_natively = False
         all_tools = self._collect_tools(request)
         if all_tools and request.tool_choice != "none":
-            if self.chat_encoding_spec == "kimi_k3" and isinstance(
-                request.tool_choice, ToolChoice
-            ):
-                raise ValueError(
-                    "Named tool choice is not supported for Kimi K3. Use "
-                    'tool_choice "auto", "required", or "none" instead.'
-                )
             request.skip_special_tokens = False
             if not isinstance(request.tool_choice, str):
                 tools = [

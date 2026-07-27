@@ -5,12 +5,16 @@ from typing import Dict, List, Optional, Tuple, Type
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.function_call.hunyuan_detector import resolve_hunyuan_tokens
 from sglang.srt.function_call.kimik3_detector import (
+    _partial_suffix_len,
+    _strip_response_wrappers,
+)
+from sglang.srt.function_call.kimik3_format import (
     MESSAGE_CLOSE,
     RESPONSE_CLOSE,
     RESPONSE_OPEN,
+    THINK_CLOSE,
+    THINK_OPEN,
     TOOLS_OPEN,
-    _partial_suffix_len,
-    _strip_response_wrappers,
 )
 from sglang.srt.parser.harmony_parser import HarmonyParser
 from sglang.srt.parser.inkling_tokenizer import (
@@ -438,8 +442,8 @@ class KimiK3Detector(BaseReasoningFormatDetector):
             "[EOT]",
         ]
         super().__init__(
-            "<|open|>think<|sep|>",
-            "<|close|>think<|sep|>",
+            THINK_OPEN,
+            THINK_CLOSE,
             think_excluded_tokens=think_excluded_tokens,
             force_reasoning=force_reasoning,
             stream_reasoning=stream_reasoning,

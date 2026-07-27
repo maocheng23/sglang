@@ -1,22 +1,26 @@
 import json
+import sys
 import unittest
+
+import pytest
 
 from sglang.srt.entrypoints.openai.protocol import Function, Tool
 from sglang.srt.function_call.kimik3_detector import (
     KimiK3Detector as KimiK3FuncDetector,
 )
+from sglang.srt.function_call.kimik3_format import (
+    MESSAGE_CLOSE,
+    RESPONSE_CLOSE,
+    RESPONSE_OPEN,
+    THINK_CLOSE,
+    THINK_OPEN,
+    TOOLS_CLOSE,
+    TOOLS_OPEN,
+)
 from sglang.srt.parser.reasoning_parser import KimiK3Detector as KimiK3ReasoningDetector
 from sglang.test.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(5, "base-a-test-cpu")
-
-THINK_OPEN = "<|open|>think<|sep|>"
-THINK_CLOSE = "<|close|>think<|sep|>"
-RESPONSE_OPEN = "<|open|>response<|sep|>"
-RESPONSE_CLOSE = "<|close|>response<|sep|>"
-MESSAGE_CLOSE = "<|close|>message<|sep|>"
-TOOLS_OPEN = "<|open|>tools<|sep|>"
-TOOLS_CLOSE = "<|close|>tools<|sep|>"
+register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 
 
 def _make_tool(name):
@@ -205,8 +209,8 @@ class TestKimiK3FuncDetector(unittest.TestCase):
         self.assertFalse(self.detector.has_tool_call(f"{RESPONSE_OPEN}x"))
 
     def test_constraint_capabilities(self):
-        self.assertFalse(self.detector.supports_structural_tag())
-        self.assertTrue(self.detector.parses_required_natively())
+        self.assertTrue(self.detector.supports_structural_tag())
+        self.assertFalse(self.detector.parses_required_natively())
 
 
 class TestKimiK3ReasoningDetector(unittest.TestCase):
@@ -327,4 +331,4 @@ class TestKimiK3ReasoningDetector(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    sys.exit(pytest.main([__file__]))
