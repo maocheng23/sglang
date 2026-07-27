@@ -124,7 +124,13 @@ def _expand_k3_image_prompt_text(
 
 def _k3_to_cuda_chw(image: Union[torch.Tensor, Image.Image]) -> torch.Tensor:
     if isinstance(image, Image.Image):
-        has_alpha = "A" in image.getbands() or "transparency" in image.info
+        # The checkpoint's fill_transparent_bg_with() returns RGB-mode images
+        # untouched before it ever inspects the alpha bands, so an RGB image
+        # carrying a stray "transparency" info key must NOT be promoted to
+        # RGBA here.
+        has_alpha = image.mode != "RGB" and (
+            "A" in image.getbands() or "transparency" in image.info
+        )
         arr = np.asarray(image.convert("RGBA" if has_alpha else "RGB"))
         return torch.from_numpy(arr).permute(2, 0, 1).cuda()
 
@@ -175,7 +181,10 @@ def _fill_transparent_bg(x: torch.Tensor, bg_cfg: Union[dict, None]) -> torch.Te
         raise ValueError(f"Invalid background pattern: {pattern}")
 
     alpha = (x[:, 3:4] / 255.0).clamp(0.0, 1.0)
-    return (alpha * rgb + (1.0 - alpha) * bg).clamp(0.0, 255.0)
+    # The checkpoint processor casts the composited float result back with
+    # numpy's astype(np.uint8), which truncates; floor matches that exactly
+    # (a composite of [0, 255] inputs is always non-negative).
+    return (alpha * rgb + (1.0 - alpha) * bg).clamp(0.0, 255.0).floor_()
 
 
 class KimiK3GPUProcessorWrapper(KimiGPUProcessorWrapper):
