@@ -26,6 +26,7 @@ from jsonschema import Draft202012Validator, SchemaError
 
 from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
 from sglang.srt.entrypoints.openai.protocol import (
+    ChatCompletionMessageGenericParam,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionResponseChoice,
@@ -42,6 +43,7 @@ from sglang.srt.entrypoints.openai.protocol import (
     PromptTokensDetails,
     ResponseParserProtocol,
     SglExt,
+    Tool,
     ToolCall,
     ToolCallProcessingResult,
     ToolChoice,
@@ -578,7 +580,11 @@ class OpenAIServingChat(OpenAIServingBase):
                 remaining_logprobs = None
 
         # Handle tool calls
-        if request.tool_choice != "none" and request.tools and self.tool_call_parser:
+        if (
+            request.tool_choice != "none"
+            and self.tool_call_parser
+            and self._collect_tools(request)
+        ):
             async for chunk in self._process_tool_call_stream(
                 index,
                 delta,
@@ -654,23 +660,25 @@ class OpenAIServingChat(OpenAIServingBase):
         if not request.messages:
             return "Messages cannot be empty."
 
+        all_tools = self._collect_tools(request) or []
+
         if (
             isinstance(request.tool_choice, str)
             and request.tool_choice.lower() == "required"
-            and not request.tools
+            and not all_tools
         ):
             return "Tools cannot be empty if tool choice is set to required."
 
         if request.tool_choice is not None and not isinstance(request.tool_choice, str):
-            if not request.tools:
+            if not all_tools:
                 return "Tools cannot be empty if tool choice is set to a specific tool."
             tool_name = request.tool_choice.function.name
-            tool_exists = any(tool.function.name == tool_name for tool in request.tools)
+            tool_exists = any(tool.function.name == tool_name for tool in all_tools)
             if not tool_exists:
                 return f"Tool '{tool_name}' not found in tools list."
 
         # Validate tool definitions
-        for i, tool in enumerate(request.tools or []):
+        for i, tool in enumerate(all_tools):
             if tool.function.parameters is None:
                 continue
             try:
@@ -834,6 +842,17 @@ class OpenAIServingChat(OpenAIServingBase):
 
         return adapted_request, request
 
+    def _collect_tools(self, request: ChatCompletionRequest) -> Optional[List[Tool]]:
+        tools = list(request.tools) if request.tools else []
+        for msg in request.messages:
+            if (
+                isinstance(msg, ChatCompletionMessageGenericParam)
+                and msg.role in ("system", "developer")
+                and msg.tools
+            ):
+                tools.extend(msg.tools)
+        return tools or None
+
     def _process_messages(
         self, request: ChatCompletionRequest, is_multimodal: bool
     ) -> MessageProcessingResult:
@@ -865,7 +884,8 @@ class OpenAIServingChat(OpenAIServingBase):
         # Apply chat template and its stop strings
         tools = None
         required_parsed_natively = False
-        if request.tools and request.tool_choice != "none":
+        all_tools = self._collect_tools(request)
+        if all_tools and request.tool_choice != "none":
             if self.chat_encoding_spec == "kimi_k3" and isinstance(
                 request.tool_choice, ToolChoice
             ):
@@ -877,14 +897,14 @@ class OpenAIServingChat(OpenAIServingBase):
             if not isinstance(request.tool_choice, str):
                 tools = [
                     item.model_dump()
-                    for item in request.tools
+                    for item in request.tools or []
                     if item.function.name == request.tool_choice.function.name
-                ]
-            else:
+                ] or None
+            elif request.tools:
                 tools = [item.model_dump() for item in request.tools]
             if self.tool_call_parser:
                 parser = FunctionCallParser(
-                    request.tools,
+                    all_tools,
                     self.tool_call_parser,
                     tokenizer=self.tokenizer_manager.tokenizer,
                 )
@@ -905,7 +925,7 @@ class OpenAIServingChat(OpenAIServingBase):
                 )
             ):
                 json_schema = get_json_schema_constraint(
-                    request.tools,
+                    all_tools,
                     request.tool_choice,
                     parallel_tool_calls=request.parallel_tool_calls,
                 )
@@ -998,6 +1018,10 @@ class OpenAIServingChat(OpenAIServingBase):
                 elif msg.get("content") is None:
                     msg["content"] = ""
 
+            for msg in messages:
+                if msg.get("role") == "developer":
+                    msg["role"] = "system"
+
             messages, assistant_prefix = self._handle_last_assistant_message(
                 messages, request
             )
@@ -1021,6 +1045,14 @@ class OpenAIServingChat(OpenAIServingBase):
                         "reasoning_effort=%r.",
                         request.reasoning_effort,
                     )
+
+            if isinstance(request.tool_choice, str):
+                template_kwargs.setdefault("tool_choice", request.tool_choice)
+            if request.response_format is not None:
+                template_kwargs.setdefault(
+                    "response_format",
+                    request.response_format.model_dump(by_alias=True),
+                )
 
             prompt_ids = self.tokenizer_manager.tokenizer.apply_chat_template(
                 messages,
@@ -1666,15 +1698,12 @@ class OpenAIServingChat(OpenAIServingBase):
 
             # Handle tool calls
             tool_calls = None
-            if (
-                request.tool_choice != "none"
-                and request.tools
-                and self.tool_call_parser
-            ):
+            all_tools = self._collect_tools(request)
+            if request.tool_choice != "none" and all_tools and self.tool_call_parser:
                 history_tool_calls_cnt = self._get_history_tool_calls_cnt(request)
                 tool_calls, text, finish_reason = self._process_tool_calls(
                     text,
-                    request.tools,
+                    all_tools,
                     finish_reason,
                     request.tool_choice,
                     history_tool_calls_cnt,
@@ -2214,6 +2243,7 @@ class OpenAIServingChat(OpenAIServingBase):
         continuous_usage_stats: bool = False,
     ):
         """Process tool calls in streaming response"""
+        all_tools = self._collect_tools(request)
         if index not in parser_dict:
             is_required = request.tool_choice == "required" or isinstance(
                 request.tool_choice, ToolChoice
@@ -2227,7 +2257,7 @@ class OpenAIServingChat(OpenAIServingBase):
                 use_native_parser = False
                 if self.tool_call_parser:
                     probe = FunctionCallParser(
-                        tools=request.tools,
+                        tools=all_tools,
                         tool_call_parser=self.tool_call_parser,
                         tokenizer=self.tokenizer_manager.tokenizer,
                     )
@@ -2241,7 +2271,7 @@ class OpenAIServingChat(OpenAIServingBase):
                     parser_dict[index] = JsonArrayParser()
             else:
                 parser_dict[index] = FunctionCallParser(
-                    tools=request.tools,
+                    tools=all_tools,
                     tool_call_parser=self.tool_call_parser,
                     tokenizer=self.tokenizer_manager.tokenizer,
                 )
@@ -2250,7 +2280,7 @@ class OpenAIServingChat(OpenAIServingBase):
 
         # Handle both FunctionCallParser and JsonArrayParser
         if isinstance(parser, JsonArrayParser):
-            result = parser.parse_streaming_increment(delta, request.tools)
+            result = parser.parse_streaming_increment(delta, all_tools)
             normal_text, calls = result.normal_text, result.calls
         else:
             normal_text, calls = parser.parse_stream_chunk(delta)
