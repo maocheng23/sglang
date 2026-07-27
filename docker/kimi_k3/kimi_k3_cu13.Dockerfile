@@ -1,33 +1,30 @@
-# Kimi-K3 serving image (x86_64 / CUDA 12.9 / sm_90 + sm_100a).
+# Kimi-K3 serving image (aarch64 / sm_90 + sm_100a + sm_103a).
 #
 # Base ships stock SGLang (editable at /sgl-workspace/sglang), DeepEP source
 # (deepseek-ai@d28bd67 at /sgl-workspace/DeepEP), the deep_gemm pip package,
-# and the CUDA 12.9 toolchain.
+# and the CUDA 13 toolchain (nvcc + /usr/local/cuda/include/cccl).
 #
-# This image adds the four Kimi-K3-specific pieces that stock lacks:
+# This image adds the three Kimi-K3-specific pieces that stock lacks:
 #   1. the Kimi-K3 SGLang code (this repo), editable-installed
 #   2. DeepEP patch + rebuild   [k3-track p0-wideep/scripts/v1]:
 #        topk 11->16, SWITCH_HIDDEN += 3584, EP>8 SourceMeta alignment,
-#        and cross-node timeout headroom; rebuilt for sm_90 and sm_100a only
+#        cross-node timeout headroom, CUDA-13 cccl include; rebuilt for
+#        sm_90, sm_100a, and sm_103a
 #   3. DeepGEMM mega-MoE SiTU patch [k3-track p0-wideep/scripts/v2]:
 #        JIT-header sentinel (activation_clamp==0.03125 -> K3 SiTU); no rebuild
 #   4. FlashInfer CuTeDSL MLA DCP patch:
 #        apply the seven runtime-file diffs; exclude tests absent from the wheel
 #
-# Build (on/for x86_64; nvcc cross-compiles the DeepEP cubin, no GPU needed):
-#   docker build -f docker/kimi_k3/cu12.Dockerfile \
-#     --build-arg 'TORCH_CUDA_ARCH_LIST=9.0;10.0a' -t kimi-k3-cu129 .
+# Build (on/for aarch64; nvcc cross-compiles the DeepEP cubin, no GPU needed):
+#   docker build -f docker/kimi_k3/kimi_k3_cu13.Dockerfile \
+#     --build-arg 'TORCH_CUDA_ARCH_LIST=9.0;10.0a;10.3a' -t kimi-k3 .
 #
-# FlashInfer MXFP4 MoE runner (trtllm-gen SiTU cubins) — runtime opt-in, no
-# image change needed: download the SiTU cubin pool archive (link published
-# with the release), unzip it, and run the container with
-#   -v /host/path/trtllm_gen_moe_cubin_pool:/opt/trtllm_gen_moe_cubin_pool \
-#   -e SGLANG_TRTLLM_GEN_MOE_CUBIN_POOL=/opt/trtllm_gen_moe_cubin_pool
-# The runner is auto-selected on SM100 when the pool is present; the remaining
-# kernel sources JIT-compile from the installed FlashInfer wheel on first
-# launch and are cached.
+# The FlashInfer MXFP4 MoE runner cubins are installed in the image below.
+# The runner is auto-selected on SM100/103; the remaining kernel sources
+# JIT-compile from the installed FlashInfer wheel on first launch and are
+# cached.
 
-FROM lmsysorg/sglang:v0.5.16-cu129 AS base
+FROM lmsysorg/sglang:v0.5.16 AS base
 
 # Current Kimi-K3 source auto-discovers and builds its PyO3 extensions.
 ARG RUST_VERSION="1.90.0"
@@ -35,7 +32,11 @@ ENV RUSTUP_HOME="/usr/local/rustup" \
     CARGO_HOME="/usr/local/cargo" \
     PATH="/usr/local/cargo/bin:${PATH}"
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      unzip \
+      wget && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
       sh -s -- -y --no-modify-path --profile minimal \
         --default-toolchain "${RUST_VERSION}" && \
@@ -43,18 +44,8 @@ RUN apt-get update && \
     rustc --version && \
     rm -rf /var/lib/apt/lists/*
 
-# Build one DeepEP wheel with native cubins for Hopper and B200. This CUDA 12.9
-# recipe intentionally excludes GB300 (sm_103/sm_103a).
-ARG TORCH_CUDA_ARCH_LIST="9.0;10.0a"
-RUN set -eu; \
-    for arch in $(printf '%s' "${TORCH_CUDA_ARCH_LIST}" | tr ';' ' '); do \
-      case "${arch}" in \
-        10.3|10.3a) \
-          echo "ERROR: CUDA 12.9 image does not support SM103 (${arch})" >&2; \
-          exit 1 \
-          ;; \
-      esac; \
-    done
+# Build one DeepEP wheel with native cubins for Hopper, B200, and GB300.
+ARG TORCH_CUDA_ARCH_LIST="9.0;10.0a;10.3a"
 
 # --- 1. Kimi-K3 SGLang code (replaces the base's stock sglang, editable) ---
 COPY . /sgl-workspace/sglang
@@ -72,7 +63,7 @@ RUN cd /sgl-workspace/sglang && \
       /usr/local/cargo/registry \
       /root/.cache/pip
 
-# --- 2. DeepEP: patch (topk16 / hidden3584 / SourceMeta) + multi-arch rebuild ---
+# --- 2. DeepEP: patch (topk16 / hidden3584 / SourceMeta / cccl) + multi-arch rebuild ---
 RUN TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
     bash /sgl-workspace/sglang/docker/kimi_k3/apply_deepep_k3_patch.sh && \
     rm -rf /sgl-workspace/DeepEP/build /sgl-workspace/DeepEP/dist
@@ -80,13 +71,30 @@ RUN TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
 # --- 3. DeepGEMM mega-MoE: SiTU JIT-header patch (runtime-JIT, no rebuild) ---
 RUN python3 /sgl-workspace/sglang/docker/kimi_k3/apply_deepgemm_situ_patch.py
 
-# TODO(kimi-k3): Download and install the FlashInfer MXFP4 MoE kernel cubin
-# in this image once its distributable artifact is available.
+# Install the pinned FlashInfer MXFP4 MoE runner cubin pool.
+ARG TRTLLM_GEN_MOE_CUBIN_URL="https://github.com/sgl-project/whl/releases/download/trtllm_gen_moe_cubin_20260617/trtllm_gen_moe_cubin_pool_20260617_v0613rc1.zip"
+ARG TRTLLM_GEN_MOE_CUBIN_SHA256="4900501cbe782a76b08a5858f9f07152287b97cb68114466dac286366b66c192"
+ARG TRTLLM_GEN_MOE_CUBIN_ARCHIVE_ROOT="trtllm_gen_moe_cubin_pool_20260617_v0613rc1"
+ENV SGLANG_TRTLLM_GEN_MOE_CUBIN_POOL="/opt/trtllm_gen_moe_cubin_pool"
+
+RUN cubin_archive="/tmp/trtllm_gen_moe_cubin_pool.zip" && \
+    cubin_extract_dir="/tmp/trtllm_gen_moe_cubin_extract" && \
+    wget --no-verbose --output-document="${cubin_archive}" \
+      "${TRTLLM_GEN_MOE_CUBIN_URL}" && \
+    echo "${TRTLLM_GEN_MOE_CUBIN_SHA256}  ${cubin_archive}" | \
+      sha256sum --check --strict - && \
+    mkdir -p "${cubin_extract_dir}" && \
+    unzip -q "${cubin_archive}" -d "${cubin_extract_dir}" && \
+    test ! -e "${SGLANG_TRTLLM_GEN_MOE_CUBIN_POOL}" && \
+    mv "${cubin_extract_dir}/${TRTLLM_GEN_MOE_CUBIN_ARCHIVE_ROOT}" \
+      "${SGLANG_TRTLLM_GEN_MOE_CUBIN_POOL}" && \
+    test "$(find "${SGLANG_TRTLLM_GEN_MOE_CUBIN_POOL}" \
+      -type f -name '*.cubin' | wc -l)" -eq 1696 && \
+    rm -f "${cubin_archive}" && \
+    rm -rf "${cubin_extract_dir}"
 
 # Reinstall the matching FlashInfer package trio before patching its Python
 # sources. A mixed Python/cubin/JIT-cache installation fails at import time.
-# flashinfer-python and flashinfer-cubin are CUDA-independent packages; the
-# JIT-cache wheel is selected from the official CUDA 12.9 index.
 RUN python3 -m pip uninstall -y \
       flashinfer-python flashinfer-cubin flashinfer-jit-cache && \
     rm -rf /root/.cache/flashinfer /root/.cache/pip && \
@@ -97,8 +105,8 @@ RUN python3 -m pip uninstall -y \
       --index-url https://flashinfer.ai/whl && \
     python3 -m pip install --no-deps \
       "flashinfer-jit-cache==0.6.15.post1" \
-      --index-url https://flashinfer.ai/whl/cu129 && \
-    python3 -c 'from importlib.metadata import version; expected = "0.6.15.post1"; assert version("flashinfer-python").split("+", 1)[0] == expected; assert version("flashinfer-cubin").split("+", 1)[0] == expected; assert version("flashinfer-jit-cache").startswith(expected + "+cu129"), version("flashinfer-jit-cache")' && \
+      --index-url https://flashinfer.ai/whl/cu130 && \
+    python3 -c 'from importlib.metadata import version; expected = "0.6.15.post1"; packages = ("flashinfer-python", "flashinfer-cubin", "flashinfer-jit-cache"); actual = {package: version(package).split("+", 1)[0] for package in packages}; assert all(value == expected for value in actual.values()), actual' && \
     rm -rf /root/.cache/pip
 
 ENV FLASHINFER_VERSION="0.6.15.post1"
