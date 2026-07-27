@@ -34,7 +34,13 @@ from sglang.srt.layers.attention.vision import (
 )
 from sglang.srt.models.kimi_vl_moonvit import concat_or_single, tpool_patch_merger
 from sglang.srt.runtime_context import get_server_args
-from sglang.srt.utils import print_info_once
+from sglang.srt.utils import get_bool_env_var, is_hip, print_info_once
+
+_is_hip = is_hip()
+_use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
+
+if _use_aiter:
+    from aiter.ops.triton.conv.conv2d import conv2d as aiter_conv2d
 
 _SM103_TRITON_MAX_SEQLEN = 1536
 _SM103_FA4_MIN_ATTENTION_WORK = 3_000_000
@@ -308,7 +314,21 @@ class MoonVision3dPatchEmbed(nn.Module):
         grid_thw_list: Optional[Sequence[Sequence[int]]] = None,
         position_embeddings: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        x = self.proj(x).view(x.size(0), -1)
+        # MIOpen can overflow grid_size for some patch shapes. Prefer AITER's
+        # Triton convolution on AMD, with an equivalent linear fallback.
+        if _use_aiter:
+            x = aiter_conv2d(
+                x,
+                self.proj.weight,
+                self.proj.bias,
+                stride=self.patch_size,
+                padding=(0, 0),
+                dilation=(1, 1),
+            ).view(x.size(0), -1)
+        elif _is_hip:
+            x = F.linear(x.flatten(1), self.proj.weight.flatten(1), self.proj.bias)
+        else:
+            x = self.proj(x).view(x.size(0), -1)
         return self.pos_emb(
             x,
             grid_thws,
@@ -419,9 +439,12 @@ class MoonViTEncoderLayer(nn.Module):
         self.wo = nn.Linear(self.qkv_hidden_size, hidden_dim, bias=attn_bias)
         self.attention_backend = attention_backend
         if attention_backend == "auto":
-            implementation_backends = (
-                ("triton_attn", "fa4") if torch.cuda.is_available() else ()
-            )
+            if not torch.cuda.is_available():
+                implementation_backends = ()
+            elif _is_hip:
+                implementation_backends = ("triton_attn",)
+            else:
+                implementation_backends = ("triton_attn", "fa4")
         elif attention_backend == "sdpa":
             implementation_backends = ()
         else:

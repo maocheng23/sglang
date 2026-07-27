@@ -29,6 +29,7 @@ from sglang.kernels.ops.attention.fla.utils import (
     check_shared_mem,
     is_intel,
     is_nvidia,
+    is_tf32_supported,
 )
 
 if is_intel:
@@ -741,7 +742,7 @@ def recompute_w_u_fwd(
         BT=BT,
         STORE_KG=kg is not None,
         IS_VARLEN=cu_seqlens is not None,
-        DOT_PRECISION="tf32",
+        DOT_PRECISION="tf32" if is_tf32_supported else "ieee",
         **(static_config or {}),
     )
     return w, u, kg
