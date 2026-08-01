@@ -115,10 +115,28 @@ def _score_kernel(
     BLOCK_H: tl.constexpr,
 ):
     """One CTA per (token, row): scan H, output one scalar score."""
-    pid_t = tl.program_id(0)
+    # bank stride is 8 * 7168; 64K token offsets exceed signed int32.
+    pid_t = tl.program_id(0).to(tl.int64)
     j = tl.program_id(1)
     if j > NVB:
         return
+
+    # The raw K3 residual stream can remain finite near the bf16 limit. A
+    # direct fp32 sum(v * v) then overflows even though RMSNorm(v) is well
+    # defined, making this DSpark-only capture path emit NaN scores. Scale
+    # each row before the norm/projection reduction to keep intermediates
+    # representable without changing the normalized score.
+    max_abs = 0.0
+    for h0 in tl.static_range(0, H, BLOCK_H):
+        offs_h = h0 + tl.arange(0, BLOCK_H)
+        if j < NVB:
+            v = tl.load(bank_ptr + pid_t * stride_bm + j * stride_bb + offs_h).to(
+                tl.float32
+            )
+        else:
+            v = tl.load(prefix_ptr + pid_t * stride_pm + offs_h).to(tl.float32)
+        max_abs = tl.maximum(max_abs, tl.max(tl.abs(v), axis=0))
+    scale = tl.maximum(max_abs, 1.0)
     sumsq = 0.0
     dotv = 0.0
     for h0 in tl.static_range(0, H, BLOCK_H):
@@ -130,9 +148,10 @@ def _score_kernel(
         else:
             v = tl.load(prefix_ptr + pid_t * stride_pm + offs_h).to(tl.float32)
         cw = tl.load(cw_ptr + offs_h)
-        sumsq += tl.sum(v * v)
-        dotv += tl.sum(v * cw)
-    rrms = 1.0 / tl.sqrt(sumsq / H + eps)
+        v_scaled = v / scale
+        sumsq += tl.sum(v_scaled * v_scaled)
+        dotv += tl.sum(v_scaled * cw)
+    rrms = 1.0 / tl.sqrt(sumsq / H + eps / scale / scale)
     tl.store(scores_ptr + pid_t * stride_sm + j, dotv * rrms)
 
 
@@ -159,7 +178,8 @@ def _combine_kernel(
     Softmax is redundantly computed by each H-chunk CTA (≤16 elements, trivial).
     This gives full H-parallelism: 7 CTAs for H=7168/1024.
     """
-    pid_t = tl.program_id(0)
+    # Keep bank/scores/output pointer arithmetic in the same 64-bit domain.
+    pid_t = tl.program_id(0).to(tl.int64)
     pid_h = tl.program_id(1)
     h0 = pid_h * BLOCK_H
 

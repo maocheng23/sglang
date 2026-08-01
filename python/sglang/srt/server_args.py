@@ -3349,6 +3349,22 @@ class ServerArgs:
     enable_return_hidden_states: A[
         bool, "Enable returning hidden states with responses.", NS("exec.features")
     ] = False
+    enable_spec_capture: A[
+        bool,
+        "Enable server-side speculative-training capture: per-request aux/last "
+        "hidden states are written to Mooncake instead of the response payload.",
+        NS("exec.features"),
+    ] = False
+    spec_capture_aux_layer_ids: A[
+        Optional[List[int]],
+        "Target layer ids whose hidden states are concatenated for capture.",
+        NS("exec.features"),
+    ] = None
+    spec_capture_method: A[
+        str,
+        "Capture method for --enable-spec-capture: eagle3, dflash, or dspark.",
+        NS("exec.features"),
+    ] = "eagle3"
     enable_return_routed_experts: A[
         bool,
         "Enable returning routed experts of each layer with responses.",

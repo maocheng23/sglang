@@ -402,6 +402,9 @@ def fused_marlin_moe(
             and intermediate_cache3.is_contiguous()
             and output.is_contiguous()
             and intermediate_cache3.shape[-1] % 8 == 0
+            # The JIT helper maps M to CUDA grid.y, whose architectural limit
+            # is 65,535. Long-context prefills use the generic reduction.
+            and intermediate_cache3.shape[0] <= 65_535
         ):
             from sglang.kernels.ops.moe.moe_topk_sum import moe_topk_sum
 

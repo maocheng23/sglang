@@ -760,6 +760,7 @@ class Req(ReqDllmMixin):
             Union[APIServerReqTimeStats, DPControllerReqTimeStats]
         ] = None,
         return_pooled_hidden_states: bool = False,
+        spec_capture: Optional[Dict[str, Any]] = None,
         multi_item_delimiter_indices: Optional[List[int]] = None,
         session_id: Optional[str] = None,
     ):
@@ -825,7 +826,13 @@ class Req(ReqDllmMixin):
             }
         self.sampling_params = sampling_params
         self.custom_logit_processor = custom_logit_processor
-        self.return_hidden_states = return_hidden_states
+        # Spec-training capture: piggyback the return_hidden_states path (fires
+        # CaptureHiddenMode.FULL); the sink consumes the slices, not the response.
+        self.spec_capture = spec_capture
+        self.return_hidden_states = return_hidden_states or spec_capture is not None
+        self.spec_capture_aux: List[torch.Tensor] = []
+        self.spec_capture_last_hidden: List[torch.Tensor] = []
+        self.spec_capture_result = None
 
         # extra key for classifying the request (e.g. cache_salt)
         if lora_id is not None:

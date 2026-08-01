@@ -487,6 +487,24 @@ class ModelRunner:
                 is_draft_worker=self.is_draft_worker,
             )
         )
+        if self.server_args.enable_spec_capture and not self.is_draft_worker:
+            # Capture needs aux-state configuration even without a draft worker.
+            capture_method = self.server_args.spec_capture_method
+            if capture_method in ("dflash", "dspark"):
+                self.spec_aux_config.dflash_use_aux_hidden_state = True
+                self.spec_aux_config.dflash_target_layer_ids = (
+                    self.server_args.spec_capture_aux_layer_ids
+                )
+            elif capture_method == "eagle3":
+                self.spec_aux_config.eagle_use_aux_hidden_state = True
+                self.spec_aux_config.eagle_aux_hidden_state_layer_ids = (
+                    self.server_args.spec_capture_aux_layer_ids
+                )
+            else:
+                raise ValueError(
+                    "--spec-capture-method must be one of: eagle3, dflash, dspark; "
+                    f"got {capture_method!r}"
+                )
 
     def init_weight_exporter(self):
         self.weight_exporter = WeightExporter(
@@ -863,7 +881,13 @@ class ModelRunner:
             eagle_aux_hidden_state_layer_ids=self.spec_aux_config.eagle_aux_hidden_state_layer_ids,
             dflash_use_aux_hidden_state=self.spec_aux_config.dflash_use_aux_hidden_state,
             dflash_target_layer_ids=self.spec_aux_config.dflash_target_layer_ids,
-            is_dspark=self.spec_algorithm.is_dspark(),
+            is_dspark=(
+                self.spec_algorithm.is_dspark()
+                or (
+                    self.server_args.enable_spec_capture
+                    and self.server_args.spec_capture_method == "dspark"
+                )
+            ),
         )
         backends = build_attention_backends(model_runner=self)
         self.attn_backend = backends.attn_backend

@@ -34,6 +34,18 @@ class TestGenerateReqInputNormalization(CustomTestCase):
             rid=["id1", "id2"],
         )
 
+    def test_spec_capture_is_sliced_per_batched_request(self):
+        captures = [
+            {"store_id": "run", "sample_id": "one"},
+            {"store_id": "run", "sample_id": "two"},
+        ]
+        req = copy.deepcopy(self.base_req)
+        req.spec_capture = captures
+        req.normalize_batch_and_arguments()
+
+        self.assertEqual(req[0].spec_capture, captures[0])
+        self.assertEqual(req[1].spec_capture, captures[1])
+
     def test_single_image_to_list_of_lists(self):
         """Test that a single image is converted to a list of single-image lists."""
         req = copy.deepcopy(self.base_req)
