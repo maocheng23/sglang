@@ -104,6 +104,7 @@ from sglang.srt.model_executor.forward_context import (
     forward_context,
     has_forward_context,
 )
+from sglang.srt.model_executor.forward_observer import ForwardObserver
 from sglang.srt.model_executor.graph_memory_usage import (
     replace_graph_memory_usage,
     replace_graph_time_usage,
@@ -322,6 +323,27 @@ class ModelRunner:
         """Whether this runner's sampling path publishes observer output."""
         return get_exec().dllm.dllm_algorithm is None and self.spec_algorithm.is_none()
 
+    @property
+    def forward_observer(self) -> Optional[ForwardObserver]:
+        return self._forward_observer
+
+    @forward_observer.setter
+    def forward_observer(self, observer: Optional[ForwardObserver]) -> None:
+        if observer is not None and not self.supports_forward_observer():
+            raise ValueError(
+                "forward observers are not supported by the configured forward path"
+            )
+        self._forward_observer = observer
+
+    def supports_forward_observer(self) -> bool:
+        """Whether this runner's forward path publishes forward-observer output."""
+        return (
+            not self.is_draft_worker
+            and get_exec().dllm.dllm_algorithm is None
+            and self.spec_algorithm.is_none()
+            and get_parallel().pp_size == 1
+        )
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -388,6 +410,7 @@ class ModelRunner:
         self.draft_model_idx = draft_model_idx
         self.enable_hisparse = get_memory().enable_hisparse
         self._sampling_observer: Optional[SamplingObserver] = None
+        self._forward_observer: Optional[ForwardObserver] = None
         self.sampling_prewarm_result = SamplingPrewarmResult()
 
         self.init_startup_observability()
@@ -629,7 +652,10 @@ class ModelRunner:
             spec_algorithm=self.spec_algorithm,
             is_draft_worker=self.is_draft_worker,
             post_capture_kv_active=is_post_capture_kv_active(
-                server_args=self.server_args, is_draft_worker=self.is_draft_worker
+                server_args=self.server_args,
+                is_draft_worker=self.is_draft_worker,
+                spec_algorithm=self.spec_algorithm,
+                token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
             ),
             spec_aux_config=self.spec_aux_config,
             is_hybrid_swa=self.is_hybrid_swa,
