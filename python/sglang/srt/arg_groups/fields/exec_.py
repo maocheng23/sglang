@@ -28,6 +28,7 @@ from sglang.srt.arg_groups.choices import (
 from sglang.srt.model_executor.cuda_graph_config import (
     Backend,
     CudaGraphConfig,
+    parse_cuda_graph_backend_arg,
     parse_cuda_graph_config_arg,
 )
 from sglang.srt.utils.common import human_readable_int
@@ -68,6 +69,44 @@ class ExecFeatures(msgspec.Struct):
         bool,
         "Enable users to pass custom logit processors to the server (disabled by default for security)",
     ] = False
+    enable_watermark: A[
+        bool,
+        "Enable Aaronson-Gumbel text watermarking.",
+    ] = False
+    watermark_config: A[
+        Optional[str],
+        "Watermark settings as a JSON file path or an inline JSON object with "
+        "optional key, key_b, context_window, mixing_probability, max_probability, "
+        "default_enabled, and enforce_all fields.",
+    ] = None
+    watermark_key: A[
+        Optional[str],
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = None
+    watermark_key_b: A[
+        Optional[str],
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = None
+    watermark_context_window: A[
+        int,
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = 4
+    watermark_mixing_probability: A[
+        float,
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = 0.5
+    watermark_max_probability: A[
+        float,
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = 1.0
+    watermark_default_enabled: A[
+        bool,
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = False
+    watermark_enforce_all: A[
+        bool,
+        Arg(help="Resolved from --watermark-config.", no_cli=True, resolvable=True),
+    ] = False
     enable_return_hidden_states: A[
         bool,
         "Enable returning full hidden states with responses. Equivalent to "
@@ -81,6 +120,38 @@ class ExecFeatures(msgspec.Struct):
             "`last`; `full` also allows return_hidden_states=True.",
             choices=["last", "full"],
         ),
+    ] = None
+    # Changes what --speculative-algorithm means: with this flag it only names
+    # the capture convention (EAGLE3, DFLASH or DSPARK) and
+    # handle_aux_hidden_state_capture resets it to None, so no draft is loaded,
+    # nothing is reserved for one, and the speculative stack stays off.
+    enable_return_aux_hidden_states: A[
+        bool,
+        "Capture auxiliary hidden states on the target model without running a "
+        "speculative draft. --speculative-algorithm then only names the capture "
+        "convention (EAGLE3, DFLASH or DSPARK) and is reset to None. Requests "
+        "with return_hidden_states receive the concatenated aux hidden states in "
+        "place of the last-layer hidden states. Sets --return-hidden-states-mode "
+        "to full when unset. Requires pp_size == 1.",
+    ] = False
+    # The capture convention behind --enable-return-aux-hidden-states, taken from
+    # --speculative-algorithm. It stays an enum because the models' capture hooks
+    # still differ by draft family (layer-id conventions, mHC contraction).
+    # TODO: unify the per-family capture hooks, then collapse this to the bool.
+    aux_hidden_state_capture: A[
+        Optional[str],
+        Arg(
+            help="Resolved from --enable-return-aux-hidden-states and "
+            "--speculative-algorithm.",
+            no_cli=True,
+            resolvable=True,
+        ),
+    ] = None
+    return_aux_hidden_state_layer_ids: A[
+        Optional[List[int]],
+        "Target layer ids captured by --enable-return-aux-hidden-states, in the "
+        "convention of a draft config's target layer ids. Required for DFLASH "
+        "and DSPARK; EAGLE3 defaults to the model's EAGLE3 layers.",
     ] = None
     enable_return_routed_experts: A[
         bool, "Enable returning routed experts of each layer with responses."
@@ -223,6 +294,7 @@ class ExecKernel(msgspec.Struct):
                 "triton",
                 "aiter",
                 "trtllm",
+                "intel_xpu",
             ],
             resolvable=True,
         ),
@@ -263,6 +335,7 @@ class ExecKernel(msgspec.Struct):
                 "triton",
                 "aiter",
                 "trtllm",
+                "intel_xpu",
             ],
             resolvable=True,
         ),
@@ -503,22 +576,24 @@ class ExecGraph(msgspec.Struct):
     cuda_graph_config: A[
         Optional[CudaGraphConfig],
         Arg(
-            help='Per-phase CUDA graph settings as JSON, e.g. \'{"decode":{"backend":"full","max_bs":256},"prefill":{"backend":"tc_piecewise","tc_compiler":"eager"}}\'. Allowed backends per phase: full, breakable, tc_piecewise, disabled (full is decode-only). JSON wins over the per-phase --cuda-graph-* convenience flags and over legacy flags.',
+            help='Per-phase CUDA graph settings as JSON, e.g. \'{"decode":{"backend":"full","max_bs":256},"prefill":{"backend":"breakable"}}\'. Allowed backends per phase: full, breakable, disabled. JSON wins over the per-phase --cuda-graph-* convenience flags and over legacy flags.',
             type_parser=parse_cuda_graph_config_arg,
         ),
     ] = None
     cuda_graph_backend_decode: A[
-        Optional[Literal["full", "breakable", "tc_piecewise", "disabled"]],
+        Optional[Literal["full", "breakable", "disabled"]],
         Arg(
             help="Backend for the decode phase. Folds into cuda_graph_config[decode].backend.",
             choices=Backend.ALL,
+            type_parser=parse_cuda_graph_backend_arg,
         ),
     ] = None
     cuda_graph_backend_prefill: A[
-        Optional[Literal["full", "breakable", "tc_piecewise", "disabled"]],
+        Optional[Literal["full", "breakable", "disabled"]],
         Arg(
             help="Backend for the prefill phase. Folds into cuda_graph_config[prefill].backend.",
             choices=Backend.ALL,
+            type_parser=parse_cuda_graph_backend_arg,
         ),
     ] = None
     cuda_graph_max_bs_decode: A[
@@ -553,10 +628,6 @@ class ExecGraph(msgspec.Struct):
             type_parser=human_readable_int,
             aliases=["--context-bucket"],
         ),
-    ] = None
-    cuda_graph_tc_compiler: A[
-        Optional[Literal["eager", "inductor"]],
-        "Compiler used by the tc_piecewise backend (currently only the prefill phase consumes it).",
     ] = None
     disable_prefill_cuda_graph: A[
         bool,
@@ -672,7 +743,8 @@ class ExecComm(msgspec.Struct):
             help=(
                 "Enable FlashInfer allreduce fusion and choose backend. "
                 "Requires SM90 or SM10X NVIDIA GPUs. "
-                "Defaults to auto. "
+                "When unspecified, supported MiMo configurations use cutedsl; "
+                "other supported models use auto. "
                 "'auto': choose mnnvl on Blackwell (SM100/SM103) systems "
                 "(single- and multi-node) and trtllm on SM90 single-node systems. "
                 "'trtllm': available on single-node systems only. "
