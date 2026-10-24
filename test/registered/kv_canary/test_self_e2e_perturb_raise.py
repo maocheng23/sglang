@@ -12,6 +12,7 @@ register_amd_ci(est_time=50, stage="extra-a", runner_config="1-gpu-small-amd")
 
 
 class TestPerturbRaiseMha(CanaryE2EBase):
+    expect_server_exit = True
     model_mode = "mha"
     kv_canary_mode = CanaryMode.RAISE
     extra_server_args = ("--kv-canary-real-data", "partial", "--skip-server-warmup")
@@ -24,10 +25,10 @@ class TestPerturbRaiseMha(CanaryE2EBase):
     def test_real_kv_used_perturbation_raises_in_raise_mode(self) -> None:
         """Verify raise mode surfaces real KV perturbation as a logged violation."""
         try:
+            # Use the default budget: first prefill may compile cold attention kernels.
             self.send_parallel_requests(
                 n=4,
                 assert_all_success=False,
-                timeout=30.0,
             )
         except Exception:
             pass

@@ -1,5 +1,6 @@
 # Copied and adapted from: https://github.com/hao-ai-lab/FastVideo
 # SPDX-License-Identifier: Apache-2.0
+import functools
 from dataclasses import dataclass
 from numbers import Integral
 from typing import Any, List, Optional, Tuple
@@ -29,6 +30,12 @@ from sglang.multimodal_gen.runtime.platforms import (
 
 def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
+
+
+@functools.lru_cache(maxsize=64)
+def cu_seqlens_on_device(bounds: tuple[int, ...], device: torch.device) -> torch.Tensor:
+    # one upload per bounds and device; callers must not mutate the result
+    return torch.tensor(bounds, dtype=torch.int32, device=device)
 
 
 # -----------------------------
@@ -322,12 +329,6 @@ class FlashAttentionMetadata:
 
 
 class FlashAttentionMetadataBuilder(AttentionMetadataBuilder):
-    def __init__(self) -> None:
-        pass
-
-    def prepare(self) -> None:
-        pass
-
     def build(  # type: ignore
         self,
         raw_latent_shape=list,
@@ -386,7 +387,6 @@ class FlashAttentionImpl(AttentionImpl):
         self.packed_trailing_padding = extra_impl_args.get(
             "packed_trailing_padding", False
         )
-        self.attention_metadata = FlashAttentionMetadata()
 
     def _request_skip_softmax_threshold(self) -> tuple[bool, float | None]:
         params = get_request_skip_softmax_params()
@@ -594,18 +594,12 @@ class FlashAttentionImpl(AttentionImpl):
         value: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run one non-causal FlashAttention ring chunk with LSE output."""
-        cu_seqlens_q = torch.tensor(
-            [0, query.shape[0]], dtype=torch.int32, device=query.device
-        )
-        cu_seqlens_k = torch.tensor(
-            [0, key.shape[0]], dtype=torch.int32, device=key.device
-        )
         result = flash_attn_varlen_func(
             query,
             key,
             value,
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
+            cu_seqlens_q=cu_seqlens_on_device((0, query.shape[0]), query.device),
+            cu_seqlens_k=cu_seqlens_on_device((0, key.shape[0]), key.device),
             max_seqlen_q=query.shape[0],
             max_seqlen_k=key.shape[0],
             softmax_scale=self.softmax_scale,
